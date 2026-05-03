@@ -1,13 +1,16 @@
 """Main orchestrator: classify → decide → dispatch → synthesize."""
 from __future__ import annotations
 
-from typing import Optional
-
 from fleet.classifier import TaskClassifier
 from fleet.config import Config
 from fleet.dispatcher import EnsembleDispatcher
 from fleet.registry import ModelRegistry
 from fleet.synthesizer import Synthesizer
+
+ERROR_MODEL_FAILED = "(model failed)"
+ERROR_ALL_MODELS_FAILED = "(all models failed)"
+ERROR_NO_MODEL = "(no model available)"
+ERROR_NO_MODELS = "(no models available)"
 
 
 class FleetRouter:
@@ -24,14 +27,15 @@ class FleetRouter:
         self,
         prompt: str,
         force_parallel: bool = False,
-        force_model: Optional[str] = None,
-        system: Optional[str] = None,
+        force_model: str | None = None,
+        system: str | None = None,
     ) -> str | dict[str, str]:
         """Process a prompt and return the best response."""
         # Override: explicit model
         if force_model:
             responses = await self._dispatcher.run(prompt, [force_model], system=system)
-            return responses.get(force_model) or "(model failed)"
+            result = responses.get(force_model)
+            return result if result is not None else ERROR_MODEL_FAILED
 
         # Classify
         tag, confidence = self._classifier.classify(prompt)
@@ -42,11 +46,11 @@ class FleetRouter:
         return await self._single(prompt, tag, system=system)
 
     async def _single(
-        self, prompt: str, tag: str, system: Optional[str] = None
+        self, prompt: str, tag: str, system: str | None = None
     ) -> str | dict[str, str]:
         model = self._registry.get_best_for_tag(tag)
         if not model:
-            return f"(no model available for tag: {tag})"
+            return f"{ERROR_NO_MODEL} for tag: {tag}"
 
         responses = await self._dispatcher.run(prompt, [model], system=system)
         result = responses.get(model)
@@ -55,19 +59,19 @@ class FleetRouter:
             for fallback in self._registry.all_available():
                 fb_responses = await self._dispatcher.run(prompt, [fallback], system=system)
                 result = fb_responses.get(fallback)
-                if result:
+                if result is not None:
                     break
-        return result or "(all models failed)"
+        return result if result is not None else ERROR_ALL_MODELS_FAILED
 
     async def _parallel(
-        self, prompt: str, tag: str, system: Optional[str] = None
+        self, prompt: str, tag: str, system: str | None = None
     ) -> str | dict[str, str]:
         max_parallel = self._config.thresholds.max_parallel
         models = self._registry.models_for_tag(tag, top_n=max_parallel)
         if not models:
             models = self._registry.all_available()[:max_parallel]
         if not models:
-            return "(no models available)"
+            return ERROR_NO_MODELS
 
         responses = await self._dispatcher.run(prompt, models, system=system)
         return self._synthesizer.pick(responses, task_tag=tag)
