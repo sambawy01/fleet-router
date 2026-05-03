@@ -56,12 +56,23 @@ def test_pick_summarize_shortest():
     assert best == "this is a reasonably short summary"
 
 
-def test_pick_tie_returns_all():
+def test_pick_general_weak_consensus_longest_wins():
+    synth = Synthesizer()
+    responses = {
+        "glm": "short",
+        "minimax": "this is a much longer response with many more characters",
+    }
+    best = synth.pick(responses, task_tag="general")
+    # Consensus is weak (very different strings), longest should win
+    assert best == "this is a much longer response with many more characters"
+
+
+def test_pick_general_tie_returns_dict():
     synth = Synthesizer()
     responses = {
         "glm": "abc",
         "minimax": "def",
     }
     best = synth.pick(responses, task_tag="general")
-    # Consensus is weak (scores ~0.0), so full dict is returned
+    # Consensus is weak and there is a tie for longest length
     assert best == {"glm": "abc", "minimax": "def"}

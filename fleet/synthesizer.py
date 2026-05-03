@@ -79,9 +79,9 @@ class Synthesizer:
     def _consensus_or_longest(self, valid: dict[str, str]) -> str | dict[str, str]:
         """Pick the response with highest average similarity to others.
 
-        If consensus is weak (best_score < 0.3), fall back to the longest
-        response. If all responses are very different and no heuristic breaks
-        the tie, return the full ``valid`` dict so the user can choose.
+        Self-consistency score is primary. If consensus is weak
+        (best_score < 0.3), fall back to the longest response. If there is a
+        tie for longest, return the full ``valid`` dict so the user can choose.
         """
         texts = list(valid.values())
         if len(texts) < 2:
@@ -98,7 +98,12 @@ class Synthesizer:
         best_name = max(scores, key=scores.get)
         best_score = scores[best_name]
 
-        if best_score < 0.3:
-            # All responses are very different — return dict so user can choose
-            return valid
-        return valid[best_name]
+        if best_score >= 0.3:
+            return valid[best_name]
+
+        # Consensus is weak — fall back to longest response
+        max_len = max(len(t) for t in texts)
+        longest = [name for name, text in valid.items() if len(text) == max_len]
+        if len(longest) == 1:
+            return valid[longest[0]]
+        return valid
