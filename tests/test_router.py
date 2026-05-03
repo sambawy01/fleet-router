@@ -115,3 +115,53 @@ async def test_empty_string_response_not_treated_as_failure(router):
 
         result = await router.ask("prompt")
         assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_force_model_returns_error_when_model_fails(router):
+    with patch.object(router._dispatcher, "run", new_callable=AsyncMock) as mock_dispatch:
+        mock_dispatch.return_value = {"gpt-4": None}
+
+        result = await router.ask("prompt", force_model="gpt-4")
+        assert result == ERROR_MODEL_FAILED
+        mock_dispatch.assert_awaited_once()
+        assert mock_dispatch.call_args[0][1] == ["gpt-4"]
+
+
+@pytest.mark.asyncio
+async def test_single_no_model_for_tag(router):
+    with patch.object(router._classifier, "classify", return_value=("code", 0.95)), \
+         patch.object(router._registry, "get_best_for_tag", return_value=None):
+        result = await router.ask("prompt")
+        assert result == f"{ERROR_NO_MODEL} for tag: code"
+
+
+@pytest.mark.asyncio
+async def test_single_both_primary_and_fallback_fail(router):
+    with patch.object(router._classifier, "classify", return_value=("code", 0.95)), \
+         patch.object(router._registry, "get_best_for_tag", return_value="primary-model"), \
+         patch.object(router._registry, "all_available", return_value=["fallback-model"]), \
+         patch.object(router._dispatcher, "run", new_callable=AsyncMock) as mock_dispatch:
+        mock_dispatch.side_effect = [
+            {"primary-model": None},
+            {"fallback-model": None},
+        ]
+
+        result = await router.ask("prompt")
+        assert result == ERROR_ALL_MODELS_FAILED
+        assert mock_dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_parallel_falls_back_to_all_available(router):
+    with patch.object(router._classifier, "classify", return_value=("creative", 0.6)), \
+         patch.object(router._registry, "models_for_tag", return_value=[]), \
+         patch.object(router._registry, "all_available", return_value=["glm-5.1"]), \
+         patch.object(router._dispatcher, "run", new_callable=AsyncMock) as mock_dispatch, \
+         patch.object(router._synthesizer, "pick", return_value="fallback result"):
+        mock_dispatch.return_value = {"glm-5.1": "fallback result"}
+
+        result = await router.ask("prompt")
+        assert result == "fallback result"
+        mock_dispatch.assert_awaited_once()
+        assert mock_dispatch.call_args[0][1] == ["glm-5.1"]
