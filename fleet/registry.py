@@ -25,10 +25,14 @@ class ModelRegistry:
         configured models exist — dispatching to a model that isn't actually
         installed produces a guaranteed 404 downstream.
         """
+        headers: dict[str, str] = {}
+        if self._config.ollama.api_key:
+            headers["Authorization"] = f"Bearer {self._config.ollama.api_key}"
         try:
             resp = requests.get(
                 f"{self._config.ollama.base_url}/api/tags",
                 timeout=5,
+                headers=headers,
             )
             resp.raise_for_status()
             data = resp.json()

@@ -33,7 +33,11 @@ class EnsembleDispatcher:
         # ad-hoc CLI use). Always Ollama with the configured base_url.
         self._default_provider: Provider = (
             self._pool.get("ollama")
-            or OllamaProvider(base_url=config.ollama.base_url, timeout=self._timeout)
+            or OllamaProvider(
+                base_url=config.ollama.base_url,
+                timeout=self._timeout,
+                api_key=config.ollama.api_key,
+            )
         )
 
     async def run(

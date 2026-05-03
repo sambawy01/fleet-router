@@ -1,5 +1,6 @@
 ollama:
   base_url: http://localhost:11434
+  # api_key: ""  # set when Ollama requires authentication (e.g. cloud models)
 models:
   deepseek-v4-pro:
     tags: [code, reasoning, math]

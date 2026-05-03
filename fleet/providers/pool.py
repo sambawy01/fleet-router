@@ -38,6 +38,7 @@ class ProviderPool:
         pool.register(OllamaProvider(
             base_url=config.ollama.base_url,
             timeout=timeout,
+            api_key=config.ollama.api_key,
         ))
         return pool
 

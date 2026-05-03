@@ -19,15 +19,29 @@ class OllamaProvider:
 
     name = "ollama"
 
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: int = 60):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        timeout: int = 60,
+        api_key: str = "",
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._api_key = api_key
+
+    def _headers(self) -> dict[str, str]:
+        """Return request headers including Authorization when api_key is set."""
+        headers: dict[str, str] = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     async def generate(self, request: GenerateRequest) -> list[Optional[str]]:
         if request.samples < 1:
             return []
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        headers = self._headers()
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             tasks = [self._one_sample(session, request) for _ in range(request.samples)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         out: list[Optional[str]] = []
@@ -88,8 +102,9 @@ class OllamaProvider:
 
     async def list_models(self) -> list[ModelInfo]:
         timeout = aiohttp.ClientTimeout(total=5)
+        headers = self._headers()
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
                 async with session.get(f"{self._base_url}/api/tags") as resp:
                     resp.raise_for_status()
                     data = await resp.json()

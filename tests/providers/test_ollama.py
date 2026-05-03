@@ -101,3 +101,40 @@ async def test_ollama_list_models_handles_errors():
         mock_get.side_effect = aiohttp.ClientError("down")
         models = await p.list_models()
     assert models == []
+
+
+def test_ollama_headers_with_api_key():
+    p = OllamaProvider(api_key="sk-secret")
+    assert p._headers() == {"Authorization": "Bearer sk-secret"}
+
+
+def test_ollama_headers_without_api_key():
+    p = OllamaProvider(api_key="")
+    assert p._headers() == {}
+
+
+@pytest.mark.asyncio
+async def test_ollama_generate_works_with_api_key():
+    """Provider with api_key must still successfully dispatch."""
+    p = OllamaProvider(api_key="sk-secret")
+    req = GenerateRequest(model="glm", prompt="hi")
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_post(mock_post, response_json={"response": "ok"})
+        result = await p.generate(req)
+    assert result == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_list_models_works_with_api_key():
+    p = OllamaProvider(api_key="sk-secret")
+    with patch("aiohttp.ClientSession.get") as mock_get:
+        mock_response = AsyncMock()
+        mock_response.json = AsyncMock(return_value={
+            "models": [{"name": "glm-5.1:fp16"}, {"name": "deepseek:latest"}]
+        })
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.return_value.__aexit__ = AsyncMock(return_value=False)
+        models = await p.list_models()
+    names = sorted(m.name for m in models)
+    assert names == ["deepseek", "glm-5.1"]

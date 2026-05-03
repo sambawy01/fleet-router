@@ -25,6 +25,7 @@ def test_load_config(tmp_path):
     config_path.write_text(SAMPLE_YAML)
     cfg = load_config(config_path)
     assert cfg.ollama.base_url == "http://localhost:11434"
+    assert cfg.ollama.api_key == ""
     assert "deepseek-v4-pro" in cfg.models
     assert cfg.models["deepseek-v4-pro"].tags == ["code", "reasoning", "math"]
     assert cfg.models["deepseek-v4-pro"].priority == 1
@@ -101,6 +102,18 @@ models:
     cfg = load_config(config_path)
     # Unknown class values fall back to "chat" rather than raising.
     assert cfg.models["weird"].model_class == "chat"
+
+
+def test_ollama_api_key_parsed(tmp_path):
+    yaml_text = """
+ollama:
+  base_url: http://localhost:11434
+  api_key: sk-ollama-secret
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_text)
+    cfg = load_config(config_path)
+    assert cfg.ollama.api_key == "sk-ollama-secret"
 
 
 def test_malformed_yaml_fallback(tmp_path):

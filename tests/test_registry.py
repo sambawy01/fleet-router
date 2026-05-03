@@ -146,3 +146,41 @@ def test_refresh_success(mock_get):
 
     # Verify model names have tag suffixes stripped
     assert reg._available == {"deepseek-v4-pro", "glm-5.1"}
+
+
+@patch("fleet.registry.requests.get")
+def test_refresh_passes_api_key(mock_get):
+    """When ollama.api_key is set, registry refresh must include Authorization header."""
+    config = Config(
+        ollama=OllamaConfig(base_url="http://localhost:11434", api_key="sk-secret"),
+        models={"glm-5.1": ModelEntry(tags=["creative"], priority=2)},
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"models": [{"name": "glm-5.1:fp16"}]}
+    mock_get.return_value = mock_response
+
+    reg = ModelRegistry(config)
+    reg.refresh()
+
+    call_kwargs = mock_get.call_args.kwargs
+    assert call_kwargs.get("headers") == {"Authorization": "Bearer sk-secret"}
+    assert reg._available == {"glm-5.1"}
+
+
+@patch("fleet.registry.requests.get")
+def test_refresh_no_api_key_no_auth_header(mock_get):
+    """When ollama.api_key is empty, no Authorization header should be sent."""
+    config = Config(
+        ollama=OllamaConfig(base_url="http://localhost:11434", api_key=""),
+        models={"glm-5.1": ModelEntry(tags=["creative"], priority=2)},
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"models": [{"name": "glm-5.1:fp16"}]}
+    mock_get.return_value = mock_response
+
+    reg = ModelRegistry(config)
+    reg.refresh()
+
+    call_kwargs = mock_get.call_args.kwargs
+    assert call_kwargs.get("headers") == {}
+    assert reg._available == {"glm-5.1"}

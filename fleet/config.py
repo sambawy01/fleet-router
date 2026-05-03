@@ -22,6 +22,7 @@ _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 @dataclass
 class OllamaConfig:
     base_url: str = _DEFAULT_BASE_URL
+    api_key: str = ""
 
 
 @dataclass
@@ -234,7 +235,13 @@ def load_config(path: Path | str | None = None) -> Config:
     base_url = ollama_raw.get("base_url", _DEFAULT_BASE_URL)
     if not isinstance(base_url, str):
         base_url = _DEFAULT_BASE_URL
-    ollama = OllamaConfig(base_url=_validate_base_url(base_url))
+    api_key = ollama_raw.get("api_key")
+    if not isinstance(api_key, str):
+        api_key = ""
+    ollama = OllamaConfig(
+        base_url=_validate_base_url(base_url),
+        api_key=api_key,
+    )
 
     models_raw = raw.get("models", {})
     if not isinstance(models_raw, dict):
