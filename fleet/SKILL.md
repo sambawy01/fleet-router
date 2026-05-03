@@ -12,19 +12,31 @@ running the CLI.
 
 ## How to invoke
 
-1. Build a single shell command. The binary is on PATH at
-   `~/.local/bin/fleet` (symlinked to the project venv); use `fleet`
-   directly if `which fleet` resolves, otherwise fall back to
+1. Build the command. The binary is on PATH at `~/.local/bin/fleet`;
+   prefer `fleet`, fall back to
    `/Users/bistrocloud/fleet-router/venv/bin/fleet`.
 2. Pass the user's prompt as a single quoted argument. Forward
-   `--parallel`, `--model <name>`, and `--config <path>` if the user
-   supplied them.
-3. Run via Bash with a generous timeout (max-quality defaults can take
-   30–90s for a single prompt; eval mode longer). Capture stdout and
-   surface it to the user verbatim — Fleet already formats parallel
-   results with `--- model ---` headers.
-4. If exit code is non-zero, show the stderr and stop. Do not re-answer
-   the prompt yourself.
+   `--parallel`, `--model <name>`, and `--config <path>` if supplied.
+3. Suppress sentence-transformers/HF Hub boilerplate so the user sees
+   the answer, not loader noise. Pipe stderr through grep:
+
+       fleet [flags] "<prompt>" 2> >(grep -v -E "huggingface_hub|Loading weights|Batches:|Warning: You are sending unauthenticated") 1>&1
+
+   Or merge+filter both streams:
+
+       fleet [flags] "<prompt>" 2>&1 | grep -v -E "huggingface_hub|Loading weights|Batches:|Warning: You are"
+
+4. Bash `timeout`: pass `timeout: 300000` (5 minutes). Max-quality
+   defaults fan out to 3 models × N samples + verifier + judge +
+   optional escalation/refinement — 60–120s is normal, 180s+ on cold
+   start with sentence-transformers loading. The default 2-minute
+   timeout will clip many runs; do not assume the call hung.
+5. If the user wants a fast answer, suggest `--model deepseek-v4-flash`
+   which skips parallel synthesis and returns in ~5–10s.
+6. Surface stdout verbatim — fleet already formats parallel results
+   with `--- model ---` headers. If exit code is non-zero, show stderr
+   and stop. Do NOT re-answer the prompt yourself; that defeats the
+   skill's purpose.
 
 ### Examples
 
