@@ -1,0 +1,15 @@
+ollama:
+  base_url: http://localhost:11434
+models:
+  deepseek-v4-pro:
+    tags: [code, reasoning, math]
+    priority: 1
+  glm-5.1:
+    tags: [creative, chinese, long_context]
+    priority: 2
+thresholds:
+  single_confidence: 0.8
+  parallel_timeout: 60
+  max_parallel: 3
+classifier:
+  embeddings_model: all-MiniLM-L6-v2
