@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/bistrocloud/fleet-router/scripts/fleet-ensure-proxy.py",
+            "timeout": 90,
+            "statusMessage": "Ensuring fleet proxy is up..."
+          }
+        ]
+      }
+    ]
+  }
+}
