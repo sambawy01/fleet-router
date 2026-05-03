@@ -19,6 +19,7 @@ def main() -> int:
 
     config = load_config(args.config)
     router = FleetRouter(config)
+    router._registry.refresh()
     prompt = " ".join(args.prompt)
 
     result = asyncio.run(router.ask(

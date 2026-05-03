@@ -20,6 +20,7 @@ class FleetRouter:
         self._config = config or Config()
         self._classifier = TaskClassifier(self._config.classifier.embeddings_model)
         self._registry = ModelRegistry(self._config)
+        self._registry.refresh()
         self._dispatcher = EnsembleDispatcher(self._config)
         self._synthesizer = Synthesizer()
 
