@@ -44,7 +44,7 @@ class Config:
 
 def _clean_model_key(key: str) -> str:
     """Strip :cloud suffix for clean lookup."""
-    return key.split(":")[0] if ":" in key else key
+    return key.removesuffix(":cloud")
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -52,7 +52,10 @@ def load_config(path: Path | None = None) -> Config:
     if not config_path.exists():
         return Config()
 
-    raw = yaml.safe_load(config_path.read_text()) or {}
+    try:
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    except yaml.YAMLError:
+        return Config()
 
     ollama_raw = raw.get("ollama", {})
     ollama = OllamaConfig(base_url=ollama_raw.get("base_url", "http://localhost:11434"))
@@ -60,6 +63,8 @@ def load_config(path: Path | None = None) -> Config:
     models_raw = raw.get("models", {})
     models: dict[str, ModelEntry] = {}
     for key, val in models_raw.items():
+        if not isinstance(val, dict):
+            continue
         clean = _clean_model_key(key)
         models[clean] = ModelEntry(
             tags=val.get("tags", []),
