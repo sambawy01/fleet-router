@@ -31,9 +31,43 @@ from typing import Any, AsyncIterator, Optional
 
 from aiohttp import web
 
-from fleet.router import FleetRouter
+from fleet.router import (
+    ERROR_ALL_MODELS_FAILED,
+    ERROR_MODEL_FAILED,
+    ERROR_NO_MODEL,
+    ERROR_NO_MODELS,
+    FleetRouter,
+)
 
 logger = logging.getLogger(__name__)
+
+# Sentinel responses from router.ask that indicate Ollama is unreachable or
+# misconfigured. router.ask never raises for these — it returns the string
+# directly — so the proxy has to pattern-match to attach an actionable hint.
+_OLLAMA_DOWN_SENTINELS: tuple[str, ...] = (
+    ERROR_ALL_MODELS_FAILED,
+    ERROR_MODEL_FAILED,
+    ERROR_NO_MODEL,
+    ERROR_NO_MODELS,
+)
+
+_OLLAMA_DOWN_HINT = (
+    "\n\nFleet Router could not reach Ollama. Check:\n"
+    "  • `ollama serve` is running\n"
+    "  • `curl http://localhost:11434/api/tags` responds\n"
+    "  • models in fleet/config.yaml are pulled (`ollama pull <name>`)\n"
+)
+
+
+def _maybe_enrich_with_ollama_hint(text: str) -> str:
+    """If `text` is a router error sentinel, append the troubleshooting hint.
+    Cheap prefix check — sentinels all start with '(' and are short."""
+    if not text.startswith("("):
+        return text
+    for sentinel in _OLLAMA_DOWN_SENTINELS:
+        if text.startswith(sentinel):
+            return text + _OLLAMA_DOWN_HINT
+    return text
 
 # How many characters the SSE writer emits per content_block_delta event.
 # Smaller = smoother UX, more events. 80 is a reasonable balance — Claude
@@ -242,6 +276,23 @@ def build_app(
     async def healthz(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "service": "fleet-proxy"})
 
+    async def list_models(_request: web.Request) -> web.Response:
+        """OpenAI-style model listing — handy for `curl` debugging and any
+        OpenAI-compatible client probing the proxy. Claude Code itself takes
+        the model from the request body, so this isn't on its hot path."""
+        try:
+            names = list(router._registry.all_available())  # type: ignore[attr-defined]
+        except AttributeError:
+            names = []
+        now = int(time.time())
+        return web.json_response({
+            "object": "list",
+            "data": [
+                {"id": name, "object": "model", "created": now, "owned_by": "fleet"}
+                for name in names
+            ],
+        })
+
     async def messages(request: web.Request) -> web.StreamResponse:
         if api_key:
             presented = request.headers.get("x-api-key") or request.headers.get("authorization", "")
@@ -283,6 +334,7 @@ def build_app(
                 )
             if isinstance(answer, dict):
                 answer = "\n\n".join(f"--- {m} ---\n{t}" for m, t in answer.items())
+            answer = _maybe_enrich_with_ollama_hint(answer)
             return web.json_response(_build_message_response(
                 answer, parsed.requested_model, message_id, prompt_tokens,
             ))
@@ -346,12 +398,14 @@ def build_app(
 
         if isinstance(answer, dict):
             answer = "\n\n".join(f"--- {m} ---\n{t}" for m, t in answer.items())
+        answer = _maybe_enrich_with_ollama_hint(answer)
         async for chunk in _stream_anthropic_body(answer):
             await resp.write(chunk)
         await resp.write_eof()
         return resp
 
     app.router.add_get("/healthz", healthz)
+    app.router.add_get("/v1/models", list_models)
     app.router.add_post("/v1/messages", messages)
     return app
 

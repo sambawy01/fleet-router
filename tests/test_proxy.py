@@ -7,7 +7,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from fleet.proxy import _flatten_content, _parse_request, build_app
+from fleet.proxy import (
+    _flatten_content,
+    _maybe_enrich_with_ollama_hint,
+    _parse_request,
+    build_app,
+)
+from fleet.router import ERROR_ALL_MODELS_FAILED, ERROR_NO_MODEL
 
 
 class _StubRouter:
@@ -200,3 +206,109 @@ async def test_router_failure_returns_500():
             "messages": [{"role": "user", "content": "hi"}],
         })
         assert resp.status == 500
+
+
+# ---------- Ollama-down hint enrichment ----------
+
+def test_maybe_enrich_passes_through_normal_text():
+    assert _maybe_enrich_with_ollama_hint("hello world") == "hello world"
+
+
+def test_maybe_enrich_passes_through_unrelated_parenthesised():
+    # Strings that start with "(" but aren't router sentinels stay untouched.
+    assert _maybe_enrich_with_ollama_hint("(this is just a parenthetical)") == \
+        "(this is just a parenthetical)"
+
+
+def test_maybe_enrich_appends_hint_to_all_models_failed_sentinel():
+    out = _maybe_enrich_with_ollama_hint(ERROR_ALL_MODELS_FAILED)
+    assert out.startswith(ERROR_ALL_MODELS_FAILED)
+    assert "ollama serve" in out
+
+
+def test_maybe_enrich_appends_hint_to_no_model_sentinel_with_suffix():
+    text = f"{ERROR_NO_MODEL} for tag: code"
+    out = _maybe_enrich_with_ollama_hint(text)
+    assert out.startswith(text)
+    assert "ollama serve" in out
+
+
+@pytest.mark.asyncio
+async def test_messages_enriches_ollama_down_response():
+    """When router.ask returns an error sentinel (Ollama down), the proxy
+    must return 200 with the sentinel + actionable troubleshooting text —
+    NOT a raw HTTP error, since errors mid-stream can't be recovered cleanly."""
+    router = _StubRouter(ERROR_ALL_MODELS_FAILED)
+    app = build_app(router)  # type: ignore[arg-type]
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/messages", json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status == 200
+        body = await resp.json()
+    text = body["content"][0]["text"]
+    assert text.startswith(ERROR_ALL_MODELS_FAILED)
+    assert "ollama serve" in text
+
+
+@pytest.mark.asyncio
+async def test_messages_streaming_enriches_ollama_down_response():
+    router = _StubRouter(ERROR_ALL_MODELS_FAILED)
+    app = build_app(router)  # type: ignore[arg-type]
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/messages", json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        assert resp.status == 200
+        raw = (await resp.read()).decode("utf-8")
+    deltas = []
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            payload = json.loads(line[len("data: "):])
+            if payload.get("type") == "content_block_delta":
+                deltas.append(payload["delta"]["text"])
+    full_text = "".join(deltas)
+    assert ERROR_ALL_MODELS_FAILED in full_text
+    assert "ollama serve" in full_text
+
+
+# ---------- /v1/models endpoint ----------
+
+@pytest.mark.asyncio
+async def test_v1_models_returns_openai_shape():
+    """Stub router has no _registry attribute — endpoint must degrade gracefully."""
+    router = _StubRouter()
+    app = build_app(router)  # type: ignore[arg-type]
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/models")
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["object"] == "list"
+    assert isinstance(body["data"], list)
+    # No _registry on stub → empty list, not a 500.
+    assert body["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_v1_models_returns_registry_models():
+    class _RegistryStub:
+        def all_available(self):
+            return ["deepseek-v4-pro", "glm-5.1"]
+
+    class _RouterWithRegistry:
+        def __init__(self):
+            self._registry = _RegistryStub()
+
+        async def ask(self, *args, **kwargs):
+            return "n/a"
+
+    app = build_app(_RouterWithRegistry())  # type: ignore[arg-type]
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/models")
+        body = await resp.json()
+    ids = [m["id"] for m in body["data"]]
+    assert ids == ["deepseek-v4-pro", "glm-5.1"]
+    assert all(m["object"] == "model" and m["owned_by"] == "fleet" for m in body["data"])
