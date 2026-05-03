@@ -1,23 +1,60 @@
 import pytest
 from fleet.synthesizer import Synthesizer
 
+
 def test_pick_code_valid():
     synth = Synthesizer()
     responses = {
         "deepseek": "def foo():\n    return 1",
-        "glm": "invalid python here",
+        "glm": "def bar():\n    x = 1\n    return x + 2",
+        "minimax": "invalid python here",
     }
     best = synth.pick(responses, task_tag="code")
-    assert best == "def foo():\n    return 1"
+    # Both deepseek and glm are valid; glm is longest
+    assert best == "def bar():\n    x = 1\n    return x + 2"
 
-def test_pick_creative_longest():
+
+def test_pick_code_no_valid():
     synth = Synthesizer()
     responses = {
-        "glm": "a short line",
+        "deepseek": "broken syntax (",
+        "glm": "also broken [ but longer now",
+    }
+    best = synth.pick(responses, task_tag="code")
+    assert best == "also broken [ but longer now"
+
+
+def test_pick_creative_diversity():
+    synth = Synthesizer()
+    responses = {
+        "glm": "word word word word word word word",
         "minimax": "a much longer and more detailed creative response with many words",
     }
     best = synth.pick(responses, task_tag="creative")
+    # minimax has higher lexical diversity (more unique words relative to length)
     assert "much longer" in best
+
+
+def test_pick_creative_tie_breaker():
+    synth = Synthesizer()
+    responses = {
+        "glm": "one two three four five six seven eight nine ten",
+        "minimax": "one two three four five six seven eight nine ten",
+    }
+    best = synth.pick(responses, task_tag="creative")
+    # Equal diversity; tie-break with longest (they're equal, so either is fine)
+    assert best in responses.values()
+
+
+def test_pick_summarize_shortest():
+    synth = Synthesizer()
+    responses = {
+        "glm": "this is a reasonably short summary",
+        "minimax": "a much longer and more detailed summary that goes on and on",
+    }
+    best = synth.pick(responses, task_tag="summarize")
+    assert best == "this is a reasonably short summary"
+
 
 def test_pick_tie_returns_all():
     synth = Synthesizer()
@@ -26,5 +63,5 @@ def test_pick_tie_returns_all():
         "minimax": "def",
     }
     best = synth.pick(responses, task_tag="general")
-    # Tie: returns first or falls through; test just ensures no crash
-    assert best in ("abc", "def")
+    # Consensus is weak (scores ~0.0), so full dict is returned
+    assert best == {"glm": "abc", "minimax": "def"}

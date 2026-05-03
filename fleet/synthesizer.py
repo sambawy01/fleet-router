@@ -31,10 +31,10 @@ class Synthesizer:
         return self._pick_general(valid)
 
     def _pick_code(self, valid: dict[str, str]) -> str | dict[str, str]:
-        """Prefer syntactically valid Python."""
-        for name, text in valid.items():
-            if self._is_valid_python(text):
-                return text
+        """Prefer syntactically valid Python; longest among valid wins."""
+        valid_python = [text for text in valid.values() if self._is_valid_python(text)]
+        if valid_python:
+            return max(valid_python, key=len)
         # Fallback: longest
         return max(valid.values(), key=len)
 
@@ -56,8 +56,14 @@ class Synthesizer:
         return self._consensus_or_longest(valid)
 
     def _pick_creative(self, valid: dict[str, str]) -> str | dict[str, str]:
-        """Prefer longest response for creative tasks."""
-        return max(valid.values(), key=len)
+        """Prefer highest lexical diversity; tie-break with longest."""
+        def diversity(text: str) -> float:
+            words = text.split()
+            if not words:
+                return 0.0
+            return len(set(words)) / len(words)
+
+        return max(valid.values(), key=lambda t: (diversity(t), len(t)))
 
     def _pick_summarize(self, valid: dict[str, str]) -> str | dict[str, str]:
         """Prefer shortest that still has content."""
@@ -71,7 +77,12 @@ class Synthesizer:
         return self._consensus_or_longest(valid)
 
     def _consensus_or_longest(self, valid: dict[str, str]) -> str | dict[str, str]:
-        """Pick the response with highest average similarity to others."""
+        """Pick the response with highest average similarity to others.
+
+        If consensus is weak (best_score < 0.3), fall back to the longest
+        response. If all responses are very different and no heuristic breaks
+        the tie, return the full ``valid`` dict so the user can choose.
+        """
         texts = list(valid.values())
         if len(texts) < 2:
             return texts[0]
@@ -87,7 +98,7 @@ class Synthesizer:
         best_name = max(scores, key=scores.get)
         best_score = scores[best_name]
 
-        # If consensus is weak, return first valid response as fallback
         if best_score < 0.3:
-            return next(iter(valid.values()))
+            # All responses are very different — return dict so user can choose
+            return valid
         return valid[best_name]
