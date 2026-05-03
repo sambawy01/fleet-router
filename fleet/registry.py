@@ -11,9 +11,8 @@ class ModelRegistry:
     def __init__(self, config: Config):
         self._config = config
         self._available: set[str] = set()
-        self._refresh()
 
-    def _refresh(self) -> None:
+    def refresh(self) -> None:
         """Fetch available Ollama models."""
         try:
             resp = requests.get(
@@ -26,7 +25,7 @@ class ModelRegistry:
                 m["name"].split(":")[0]  # strip tag
                 for m in data.get("models", [])
             }
-        except Exception:
+        except requests.RequestException:
             self._available = set(self._config.models.keys())
 
     def get_best_for_tag(self, tag: str) -> str | None:
