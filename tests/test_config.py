@@ -63,3 +63,14 @@ def test_missing_file_fallback():
     assert cfg.thresholds.parallel_timeout == 60
     assert cfg.thresholds.max_parallel == 3
     assert cfg.classifier.embeddings_model == "all-MiniLM-L6-v2"
+
+
+def test_malformed_yaml_fallback(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ollama: [not_a_dict\n")
+    cfg = load_config(config_path)
+    assert isinstance(cfg, Config)
+    assert cfg.ollama.base_url == "http://localhost:11434"
+    assert cfg.models == {}
+    assert cfg.thresholds.single_confidence == 0.8
+    assert cfg.classifier.embeddings_model == "all-MiniLM-L6-v2"

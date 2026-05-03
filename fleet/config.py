@@ -58,9 +58,13 @@ def load_config(path: Path | None = None) -> Config:
         return Config()
 
     ollama_raw = raw.get("ollama", {})
+    if not isinstance(ollama_raw, dict):
+        ollama_raw = {}
     ollama = OllamaConfig(base_url=ollama_raw.get("base_url", "http://localhost:11434"))
 
     models_raw = raw.get("models", {})
+    if not isinstance(models_raw, dict):
+        models_raw = {}
     models: dict[str, ModelEntry] = {}
     for key, val in models_raw.items():
         if not isinstance(val, dict):
@@ -72,6 +76,8 @@ def load_config(path: Path | None = None) -> Config:
         )
 
     thresh_raw = raw.get("thresholds", {})
+    if not isinstance(thresh_raw, dict):
+        thresh_raw = {}
     thresholds = ThresholdConfig(
         single_confidence=thresh_raw.get("single_confidence", 0.8),
         parallel_timeout=thresh_raw.get("parallel_timeout", 60),
@@ -79,6 +85,8 @@ def load_config(path: Path | None = None) -> Config:
     )
 
     clf_raw = raw.get("classifier", {})
+    if not isinstance(clf_raw, dict):
+        clf_raw = {}
     classifier = ClassifierConfig(
         embeddings_model=clf_raw.get("embeddings_model", "all-MiniLM-L6-v2")
     )
