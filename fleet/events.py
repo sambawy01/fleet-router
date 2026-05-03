@@ -77,6 +77,37 @@ def logging_sink(event: RouterEvent) -> None:
     logger.info("event %s: %s", type(event).__name__, event)
 
 
+def cli_progress_sink(event: RouterEvent) -> None:
+    """One-line stderr progress for interactive CLI use.
+
+    Without this, max-quality runs (3 models × N samples + verifier +
+    judge + escalation/refinement) take 60–180s with zero feedback —
+    the user has no signal that work is happening. These lines go to
+    stderr so they don't pollute the answer on stdout."""
+    import sys
+
+    if isinstance(event, PromptClassified):
+        print(
+            f"→ classified as {event.tag!r} (confidence {event.confidence:.2f})",
+            file=sys.stderr, flush=True,
+        )
+    elif isinstance(event, ModelDispatched):
+        models = ", ".join(event.models)
+        print(
+            f"→ dispatching {len(event.models)} model(s) × {event.samples} sample(s): {models}",
+            file=sys.stderr, flush=True,
+        )
+    elif isinstance(event, ResponseSynthesized):
+        if event.abstain:
+            tail = "abstained"
+        elif event.winner_model is not None:
+            score = f"{event.winner_score:.2f}" if event.winner_score is not None else "?"
+            tail = f"winner={event.winner_model} (score={score})"
+        else:
+            tail = event.mode
+        print(f"→ synthesized [{event.mode}]: {tail}", file=sys.stderr, flush=True)
+
+
 class JSONLSink:
     """Append each event as a single JSON line to a file."""
 

@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from fleet.config import clean_model_key, load_config
+from fleet.events import EventBus, cli_progress_sink
 from fleet.router import FleetRouter
 
 
@@ -29,6 +30,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose",
         action="store_true",
         help="Verbose logging to stderr",
+    )
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress per-step progress (classify/dispatch/synthesize) on stderr",
     )
     parser.add_argument(
         "--eval", default=None, metavar="FIXTURES_DIR",
@@ -180,7 +186,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     config = load_config(args.config)
-    router = FleetRouter(config)
+    # Default-on progress lines for ask/eval — without them, max-quality
+    # runs are silent for 60–180s. --quiet (or any non-interactive eval
+    # flow that consumes stdout via JSON) can opt out.
+    events = EventBus()
+    if not args.quiet and not args.serve:
+        events.subscribe(cli_progress_sink)
+    router = FleetRouter(config, events=events)
 
     if args.serve:
         return _run_serve(router, args)

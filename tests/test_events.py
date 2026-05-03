@@ -3,8 +3,10 @@ import json
 from fleet.events import (
     EventBus,
     JSONLSink,
+    ModelDispatched,
     PromptClassified,
     ResponseSynthesized,
+    cli_progress_sink,
     logging_sink,
 )
 
@@ -49,3 +51,41 @@ def test_jsonl_sink_writes_one_line_per_event(tmp_path):
 
 def test_logging_sink_does_not_crash(caplog):
     logging_sink(PromptClassified(tag="x"))  # smoke test
+
+
+def test_cli_progress_sink_emits_one_line_per_event(capsys):
+    cli_progress_sink(PromptClassified(tag="creative", confidence=0.42))
+    cli_progress_sink(ModelDispatched(
+        models=["glm-5.1", "deepseek-v4-pro"], tag="creative", samples=5,
+    ))
+    cli_progress_sink(ResponseSynthesized(
+        tag="creative", mode="verifier",
+        winner_model="glm-5.1", winner_score=0.78,
+    ))
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line]
+    assert len(lines) == 3
+    assert "classified as 'creative'" in lines[0] and "0.42" in lines[0]
+    assert "dispatching 2 model(s) × 5 sample(s)" in lines[1]
+    assert "glm-5.1" in lines[1] and "deepseek-v4-pro" in lines[1]
+    assert "synthesized [verifier]" in lines[2]
+    assert "winner=glm-5.1" in lines[2] and "0.78" in lines[2]
+
+
+def test_cli_progress_sink_handles_abstain_and_missing_score(capsys):
+    cli_progress_sink(ResponseSynthesized(
+        tag="reasoning", mode="verifier", abstain=True,
+    ))
+    cli_progress_sink(ResponseSynthesized(
+        tag="reasoning", mode="heuristic",
+    ))
+    err = capsys.readouterr().err.splitlines()
+    assert "abstained" in err[0]
+    # No winner, no abstain → falls back to mode label.
+    assert "heuristic" in err[1]
+
+
+def test_cli_progress_sink_ignores_unknown_event_types():
+    """Sink should silently skip event types it doesn't render — no exception."""
+    from fleet.events import RouterEvent
+    cli_progress_sink(RouterEvent())  # base event, no formatter — must not raise
