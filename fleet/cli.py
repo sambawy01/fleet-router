@@ -67,12 +67,21 @@ def _run_ask(router: FleetRouter, args: argparse.Namespace) -> int:
         return 1
     prompt = " ".join(args.prompt)
     force_model = clean_model_key(args.model) if args.model else None
+
+    async def _ask_and_close() -> str | dict[str, str]:
+        try:
+            return await router.ask(
+                prompt,
+                force_parallel=args.parallel,
+                force_model=force_model,
+            )
+        finally:
+            # Close the provider pool inside the same event loop that
+            # opened it; otherwise aiohttp warns at interpreter exit.
+            await router.aclose()
+
     try:
-        result = asyncio.run(router.ask(
-            prompt,
-            force_parallel=args.parallel,
-            force_model=force_model,
-        ))
+        result = asyncio.run(_ask_and_close())
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130
@@ -107,8 +116,14 @@ def _run_eval(router: FleetRouter, args: argparse.Namespace) -> int:
         print(f"fleet: no eval cases found in {fixtures_dir}", file=sys.stderr)
         return 1
 
+    async def _run_and_close():
+        try:
+            return await run_eval(router, cases)
+        finally:
+            await router.aclose()
+
     try:
-        results = asyncio.run(run_eval(router, cases))
+        results = asyncio.run(_run_and_close())
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130

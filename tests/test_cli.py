@@ -1,4 +1,9 @@
-"""Tests for the `fleet` CLI entrypoint."""
+"""Tests for the `fleet` CLI entrypoint.
+
+When mocking FleetRouter, remember the CLI awaits BOTH `ask` and `aclose`
+(the latter in a finally block to close the aiohttp pool). Tests must
+configure both as AsyncMock or every test returns rc=1 from a TypeError
+raised on `await MagicMock()`."""
 from __future__ import annotations
 
 import json
@@ -35,6 +40,7 @@ def test_build_parser_flags():
 def test_main_prints_string_result(capsys):
     with patch("fleet.cli.FleetRouter") as router_cls:
         router_cls.return_value.ask = AsyncMock(return_value="the answer")
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["hello"])
     captured = capsys.readouterr()
     assert rc == 0
@@ -47,6 +53,7 @@ def test_main_prints_dict_result_with_headers(capsys):
             "glm-5.1": "answer A",
             "minimax-m2.7": "answer B",
         })
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["compare", "models"])
     captured = capsys.readouterr()
     assert rc == 0
@@ -61,6 +68,7 @@ def test_main_passes_force_model_normalized(capsys):
     with patch("fleet.cli.FleetRouter") as router_cls:
         ask = AsyncMock(return_value="ok")
         router_cls.return_value.ask = ask
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["--model", "glm-5.1:cloud", "hi"])
     assert rc == 0
     ask.assert_awaited_once()
@@ -71,6 +79,7 @@ def test_main_passes_force_parallel(capsys):
     with patch("fleet.cli.FleetRouter") as router_cls:
         ask = AsyncMock(return_value="ok")
         router_cls.return_value.ask = ask
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["--parallel", "hello"])
     assert rc == 0
     assert ask.call_args.kwargs["force_parallel"] is True
@@ -82,6 +91,7 @@ def test_main_returns_exit_code_2_on_sentinel_error(capsys):
         router_cls.return_value.ask = AsyncMock(
             return_value="(no model available) for tag: code"
         )
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["hello"])
     assert rc == 2
 
@@ -89,6 +99,7 @@ def test_main_returns_exit_code_2_on_sentinel_error(capsys):
 def test_main_returns_exit_code_1_on_unexpected_exception(capsys):
     with patch("fleet.cli.FleetRouter") as router_cls:
         router_cls.return_value.ask = AsyncMock(side_effect=RuntimeError("boom"))
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["hello"])
     captured = capsys.readouterr()
     assert rc == 1
@@ -100,6 +111,7 @@ def test_main_no_argv_uses_sys_argv(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["fleet", "from", "argv"])
     with patch("fleet.cli.FleetRouter") as router_cls:
         router_cls.return_value.ask = AsyncMock(return_value="ok")
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main()
     assert rc == 0
 
@@ -123,6 +135,7 @@ def test_eval_command_runs_and_returns_aggregates(tmp_path, capsys):
     )
     with patch("fleet.cli.FleetRouter") as router_cls:
         router_cls.return_value.ask = AsyncMock(return_value="the answer is 2")
+        router_cls.return_value.aclose = AsyncMock()
         rc = cli.main(["--eval", str(fixtures)])
     captured = capsys.readouterr()
     assert rc == 0

@@ -90,6 +90,13 @@ class FleetRouter:
         """Eagerly refresh the model registry."""
         self._registry.refresh()
 
+    async def aclose(self) -> None:
+        """Close the underlying provider pool's aiohttp sessions. Without
+        this, short-lived callers (the CLI, eval harness) leak a session
+        per run — aiohttp logs a noisy `Unclosed client session` warning
+        at interpreter shutdown."""
+        await self._dispatcher.aclose()
+
     async def ask(
         self,
         prompt: str,
