@@ -7,6 +7,12 @@ models:
   glm-5.1:
     tags: [creative, chinese, long_context]
     priority: 2
+  minimax-m2.7:
+    tags: [summarize, dialogue]
+    priority: 3
+  deepseek-v4-flash:
+    tags: [code, general]
+    priority: 4
 thresholds:
   single_confidence: 0.8
   parallel_timeout: 60

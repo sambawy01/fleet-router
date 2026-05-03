@@ -1,8 +1,13 @@
 """Discover Ollama models and map task tags to best model names."""
 from __future__ import annotations
 
+import logging
+
 import requests
+
 from fleet.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRegistry:
@@ -11,9 +16,15 @@ class ModelRegistry:
     def __init__(self, config: Config):
         self._config = config
         self._available: set[str] = set()
+        self._refreshed = False
 
     def refresh(self) -> None:
-        """Fetch available Ollama models."""
+        """Fetch the set of currently-installed Ollama models.
+
+        On any failure we record the empty set rather than pretending all
+        configured models exist — dispatching to a model that isn't actually
+        installed produces a guaranteed 404 downstream.
+        """
         try:
             resp = requests.get(
                 f"{self._config.ollama.base_url}/api/tags",
@@ -21,27 +32,87 @@ class ModelRegistry:
             )
             resp.raise_for_status()
             data = resp.json()
-            self._available = {
-                m["name"].split(":")[0]  # strip tag
-                for m in data.get("models", [])
-            }
-        except requests.RequestException:
-            self._available = set(self._config.models.keys())
+        except requests.RequestException as exc:
+            logger.warning(
+                "ollama /api/tags unreachable (%s); registry empty", exc
+            )
+            self._available = set()
+            self._refreshed = True
+            return
+        except ValueError as exc:
+            logger.warning(
+                "ollama /api/tags returned invalid JSON (%s); registry empty", exc
+            )
+            self._available = set()
+            self._refreshed = True
+            return
+
+        names: set[str] = set()
+        for entry in data.get("models", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            raw = entry.get("name")
+            if not isinstance(raw, str) or not raw:
+                continue
+            names.add(raw.split(":", 1)[0])
+        self._available = names
+        self._refreshed = True
+
+    def _ensure_refreshed(self) -> None:
+        # Tests poke `_available` directly; honor that and skip the live fetch
+        # when the registry has been pre-populated.
+        if self._refreshed or self._available:
+            return
+        self.refresh()
 
     def get_best_for_tag(self, tag: str) -> str | None:
         """Return single best model for a tag, or None if no match."""
+        self._ensure_refreshed()
         candidates = self.models_for_tag(tag, top_n=1)
         return candidates[0] if candidates else None
 
-    def models_for_tag(self, tag: str, top_n: int = 3) -> list[str]:
-        """Return top N models matching a tag, sorted by priority."""
+    def models_for_tag(self, tag: str, top_n: int | None = None) -> list[str]:
+        """Return up to `top_n` available models matching a tag, sorted by
+        ascending priority. Defaults to `config.thresholds.max_parallel`.
+
+        Ollama-provider models are gated on the live `_available` set so we
+        never dispatch to models that aren't actually installed. Hosted
+        providers (openai, anthropic, etc.) are trusted from config — there
+        is no per-account model list to gate against."""
+        self._ensure_refreshed()
+        if top_n is None:
+            top_n = self._config.thresholds.max_parallel
         scored: list[tuple[str, int]] = []
         for name, entry in self._config.models.items():
-            if tag in entry.tags and name in self._available:
-                scored.append((name, entry.priority))
+            if tag not in entry.tags:
+                continue
+            if entry.provider == "ollama" and name not in self._available:
+                continue
+            scored.append((name, entry.priority))
         scored.sort(key=lambda x: x[1])
         return [name for name, _ in scored[:top_n]]
 
+    def all_models_for_tag(self, tag: str) -> list[str]:
+        """Every available model matching a tag, priority-sorted, no top_n cap.
+        Used by bandit-aware selection so the bandit can explore beyond
+        `max_parallel` head-of-line candidates."""
+        return self.models_for_tag(tag, top_n=10_000)
+
     def all_available(self) -> list[str]:
-        """List all currently available models."""
-        return sorted(self._available)
+        """List currently available models, sorted by configured priority
+        (unknown models sort last alphabetically). Includes both Ollama
+        models that are actually installed AND non-Ollama configured models."""
+        self._ensure_refreshed()
+        configured = self._config.models
+        ollama_installed = set(self._available)
+        names: set[str] = set(ollama_installed)
+        for name, entry in configured.items():
+            if entry.provider != "ollama":
+                names.add(name)
+        return sorted(
+            names,
+            key=lambda n: (
+                configured[n].priority if n in configured else 99,
+                n,
+            ),
+        )

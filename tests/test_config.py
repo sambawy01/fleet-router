@@ -65,6 +65,44 @@ def test_missing_file_fallback():
     assert cfg.classifier.embeddings_model == "all-MiniLM-L6-v2"
 
 
+def test_model_class_parses(tmp_path):
+    yaml_text = """
+models:
+  thinker:
+    tags: [reasoning]
+    priority: 1
+    class: reasoning
+  chatter:
+    tags: [creative]
+    priority: 2
+    class: chat
+  default-class:
+    tags: [code]
+    priority: 3
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_text)
+    cfg = load_config(config_path)
+    assert cfg.models["thinker"].model_class == "reasoning"
+    assert cfg.models["chatter"].model_class == "chat"
+    # Default when 'class' key is absent
+    assert cfg.models["default-class"].model_class == "chat"
+
+
+def test_model_class_invalid_falls_back_to_chat(tmp_path):
+    yaml_text = """
+models:
+  weird:
+    tags: [code]
+    class: superintelligent
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_text)
+    cfg = load_config(config_path)
+    # Unknown class values fall back to "chat" rather than raising.
+    assert cfg.models["weird"].model_class == "chat"
+
+
 def test_malformed_yaml_fallback(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("ollama: [not_a_dict\n")

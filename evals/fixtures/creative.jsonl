@@ -1,0 +1,2 @@
+{"tag": "creative", "prompt": "Write a six-word story about a lighthouse.", "expected": ["lighthouse"]}
+{"tag": "creative", "prompt": "Write a haiku about autumn leaves.", "expected": ["leaf", "leaves", "autumn", "fall"]}

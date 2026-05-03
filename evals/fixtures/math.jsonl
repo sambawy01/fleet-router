@@ -1,0 +1,5 @@
+{"tag": "math", "prompt": "Solve: 2x + 5 = 13. What is x?", "expected": 4}
+{"tag": "math", "prompt": "If a train travels 60 miles in 1.5 hours, what is its average speed in mph?", "expected": 40}
+{"tag": "math", "prompt": "What is 15% of 200?", "expected": 30}
+{"tag": "math", "prompt": "A rectangle has length 8 and width 5. What is its area?", "expected": 40}
+{"tag": "math", "prompt": "If you have 24 cookies and split them equally among 6 people, how many does each person get?", "expected": 4}

@@ -80,7 +80,9 @@ def test_all_available():
 
 
 @patch("fleet.registry.requests.get")
-def test_refresh_fallback_on_error(mock_get):
+def test_refresh_failure_yields_empty_set(mock_get):
+    """On network failure the registry must NOT pretend all configured models
+    are installed — that produces guaranteed downstream 404s."""
     config = Config(
         ollama=OllamaConfig(base_url="http://localhost:11434"),
         models={
@@ -93,7 +95,32 @@ def test_refresh_fallback_on_error(mock_get):
     reg = ModelRegistry(config)
     reg.refresh()
 
-    assert reg._available == {"deepseek-v4-pro", "glm-5.1"}
+    assert reg._available == set()
+
+
+@patch("fleet.registry.requests.get")
+def test_refresh_skips_entries_without_name(mock_get):
+    """Ollama responses missing the 'name' key must not raise KeyError."""
+    config = Config(
+        ollama=OllamaConfig(base_url="http://localhost:11434"),
+        models={"glm-5.1": ModelEntry(tags=["creative"], priority=2)},
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "models": [
+            {"name": "glm-5.1:fp16"},
+            {},
+            {"name": ""},
+            {"name": None},
+            "not-a-dict",
+        ]
+    }
+    mock_get.return_value = mock_response
+
+    reg = ModelRegistry(config)
+    reg.refresh()
+
+    assert reg._available == {"glm-5.1"}
 
 
 @patch("fleet.registry.requests.get")

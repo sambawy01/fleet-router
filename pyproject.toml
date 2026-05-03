@@ -23,3 +23,6 @@ dev = [
 
 [project.scripts]
 fleet = "fleet.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fleet*", "evals*"]

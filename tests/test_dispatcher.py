@@ -2,7 +2,7 @@ import asyncio
 
 import aiohttp
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fleet.dispatcher import EnsembleDispatcher
 from fleet.config import Config
@@ -14,7 +14,11 @@ def _setup_mock_post(
     raise_for_status_error=None,
     post_error=None,
 ):
-    """Configure mock aiohttp.ClientSession.post with desired behavior."""
+    """Configure mock aiohttp.ClientSession.post with desired behavior.
+
+    Note: aiohttp's ClientResponse.raise_for_status is *synchronous*, so the
+    mock must be a regular MagicMock — not an AsyncMock — or `side_effect`
+    will not raise inline."""
     if post_error:
         mock_post.side_effect = post_error
         return
@@ -24,9 +28,9 @@ def _setup_mock_post(
         return_value={"response": "hello"} if response_json is None else response_json
     )
     if raise_for_status_error:
-        mock_response.raise_for_status = AsyncMock(side_effect=raise_for_status_error)
+        mock_response.raise_for_status = MagicMock(side_effect=raise_for_status_error)
     else:
-        mock_response.raise_for_status = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
     mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_response)
     mock_post.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -92,6 +96,30 @@ async def test_dispatch_missing_response_key():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_non_string_response_treated_as_failure():
+    config = Config()
+    disp = EnsembleDispatcher(config)
+
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_mock_post(mock_post, response_json={"response": 12345})
+        result = await disp.run("hi", ["glm-5.1"])
+        assert result == {"glm-5.1": None}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_oversized_response_truncated():
+    config = Config()
+    disp = EnsembleDispatcher(config)
+
+    huge = "x" * (4 * 1024 * 1024 + 100)
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_mock_post(mock_post, response_json={"response": huge})
+        result = await disp.run("hi", ["glm-5.1"])
+        assert result["glm-5.1"] is not None
+        assert len(result["glm-5.1"]) == 4 * 1024 * 1024
+
+
+@pytest.mark.asyncio
 async def test_dispatch_exception_in_call():
     config = Config()
     disp = EnsembleDispatcher(config)
@@ -131,10 +159,10 @@ async def test_dispatch_mixed_success_failure():
     with patch("aiohttp.ClientSession.post") as mock_post:
         success_resp = AsyncMock()
         success_resp.json = AsyncMock(return_value={"response": "ok"})
-        success_resp.raise_for_status = AsyncMock()
+        success_resp.raise_for_status = MagicMock()
 
         error_resp = AsyncMock()
-        error_resp.raise_for_status = AsyncMock(
+        error_resp.raise_for_status = MagicMock(
             side_effect=aiohttp.ClientResponseError(
                 request_info=AsyncMock(real_url="http://localhost:11434/api/generate"),
                 history=(),

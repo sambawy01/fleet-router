@@ -8,12 +8,15 @@ from fleet.router import (
     ERROR_NO_MODEL,
     ERROR_NO_MODELS,
 )
-from fleet.config import Config
+from fleet.config import Config, SynthesisConfig
 
 
 @pytest.fixture
 def router():
-    config = Config()
+    # Existing tests assert against the heuristic synthesizer's behavior;
+    # opt them into heuristic mode explicitly. Verifier-path behavior is
+    # covered by tests/test_router_verifier.py.
+    config = Config(synthesis=SynthesisConfig(mode="heuristic"))
     return FleetRouter(config)
 
 
@@ -123,7 +126,8 @@ async def test_force_model_returns_error_when_model_fails(router):
         mock_dispatch.return_value = {"gpt-4": None}
 
         result = await router.ask("prompt", force_model="gpt-4")
-        assert result == ERROR_MODEL_FAILED
+        assert ERROR_MODEL_FAILED in result
+        assert "gpt-4" in result  # error includes model name for context
         mock_dispatch.assert_awaited_once()
         assert mock_dispatch.call_args[0][1] == ["gpt-4"]
 

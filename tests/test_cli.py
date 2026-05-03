@@ -1,0 +1,138 @@
+"""Tests for the `fleet` CLI entrypoint."""
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from fleet import cli
+
+
+def test_build_parser_basic():
+    parser = cli._build_parser()
+    args = parser.parse_args(["hello", "world"])
+    assert args.prompt == ["hello", "world"]
+    assert args.parallel is False
+    assert args.model is None
+    assert args.config is None
+    assert args.verbose is False
+
+
+def test_build_parser_flags():
+    parser = cli._build_parser()
+    args = parser.parse_args([
+        "--parallel", "--model", "glm-5.1", "--config", "/tmp/x.yaml",
+        "-v", "do", "the", "thing",
+    ])
+    assert args.parallel is True
+    assert args.model == "glm-5.1"
+    assert args.config == "/tmp/x.yaml"
+    assert args.verbose is True
+    assert args.prompt == ["do", "the", "thing"]
+
+
+def test_main_prints_string_result(capsys):
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(return_value="the answer")
+        rc = cli.main(["hello"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.strip() == "the answer"
+
+
+def test_main_prints_dict_result_with_headers(capsys):
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(return_value={
+            "glm-5.1": "answer A",
+            "minimax-m2.7": "answer B",
+        })
+        rc = cli.main(["compare", "models"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "--- glm-5.1 ---" in captured.out
+    assert "answer A" in captured.out
+    assert "--- minimax-m2.7 ---" in captured.out
+    assert "answer B" in captured.out
+
+
+def test_main_passes_force_model_normalized(capsys):
+    """--model glm-5.1:cloud must be normalized to glm-5.1 before dispatch."""
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        ask = AsyncMock(return_value="ok")
+        router_cls.return_value.ask = ask
+        rc = cli.main(["--model", "glm-5.1:cloud", "hi"])
+    assert rc == 0
+    ask.assert_awaited_once()
+    assert ask.call_args.kwargs["force_model"] == "glm-5.1"
+
+
+def test_main_passes_force_parallel(capsys):
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        ask = AsyncMock(return_value="ok")
+        router_cls.return_value.ask = ask
+        rc = cli.main(["--parallel", "hello"])
+    assert rc == 0
+    assert ask.call_args.kwargs["force_parallel"] is True
+
+
+def test_main_returns_exit_code_2_on_sentinel_error(capsys):
+    """Sentinel error strings (start with '(') signal routing failure to shells."""
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(
+            return_value="(no model available) for tag: code"
+        )
+        rc = cli.main(["hello"])
+    assert rc == 2
+
+
+def test_main_returns_exit_code_1_on_unexpected_exception(capsys):
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(side_effect=RuntimeError("boom"))
+        rc = cli.main(["hello"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "RuntimeError" in captured.err
+    assert "boom" in captured.err
+
+
+def test_main_no_argv_uses_sys_argv(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["fleet", "from", "argv"])
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(return_value="ok")
+        rc = cli.main()
+    assert rc == 0
+
+
+def test_main_missing_prompt_returns_error(capsys):
+    """Without `prompt` and without `--eval`, the CLI prints an error and
+    exits 1 (argparse no longer rejects empty args because --eval can fill
+    that slot)."""
+    rc = cli.main([])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "missing prompt" in captured.err
+
+
+def test_eval_command_runs_and_returns_aggregates(tmp_path, capsys):
+    """`fleet --eval <dir>` runs the eval harness and prints aggregates."""
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "math.jsonl").write_text(
+        '{"prompt": "1+1?", "tag": "math", "expected": 2}\n'
+    )
+    with patch("fleet.cli.FleetRouter") as router_cls:
+        router_cls.return_value.ask = AsyncMock(return_value="the answer is 2")
+        rc = cli.main(["--eval", str(fixtures)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    output = json.loads(captured.out)
+    assert output["n_cases"] == 1
+    assert output["aggregates"]["math"]["pass_rate"] == 1.0
+
+
+def test_eval_command_missing_fixtures_dir(tmp_path, capsys):
+    rc = cli.main(["--eval", str(tmp_path / "nope")])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "fixtures directory not found" in captured.err

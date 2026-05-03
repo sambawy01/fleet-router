@@ -1,86 +1,179 @@
+<div align="center">
+
 # Fleet Router
 
-Adaptive parallel LLM router that automatically classifies prompts and routes them to the best Ollama cloud model. Uses parallel ensemble mode when confidence is low.
+### Adaptive parallel LLM router with **verifier-driven synthesis** for open-source models on Ollama
 
-## What it does
+*Quality-first. Not fastest. Not cheapest. **Best answer.***
 
-1. **Classifies** your prompt into a task tag (code, creative, math, reasoning, summarize, translate, general)
-2. **Routes** high-confidence prompts to a single best-matched model for speed
-3. **Runs in parallel** low-confidence prompts across multiple models and synthesizes the best answer
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-189%20passing-2ea44f)](#testing)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Runtime: Ollama](https://img.shields.io/badge/runtime-Ollama-FF6B35?logo=ollama&logoColor=white)](https://ollama.com)
 
-## Models
+</div>
 
-| Model | Best For | Ollama Tag |
-|-------|----------|------------|
-| DeepSeek V4 Pro | Code, reasoning, math | `deepseek-v4-pro:cloud` |
-| GLM 5.1 | Creative writing, Chinese, long context | `glm-5.1:cloud` |
-| MiniMax 2.7 | Summarization, dialogue | `minimax-m2.7:cloud` |
-| DeepSeek V4 Flash | Fast drafts | `deepseek-v4-flash:cloud` |
+---
 
-## Architecture
+## Why Fleet?
 
-```
-Prompt → Classifier → Decision → Dispatcher → Synthesizer → Result
-              ↑            ↑            ↑              ↑
-         keywords +    confidence   parallel or     pick best by
-         embeddings     threshold    single          task heuristic
-```
+A single LLM call is a guess. **Fleet is a system.**
 
-## Installation
+| | Single Ollama call | Fleet |
+|---|:---:|:---:|
+| **Opinions per prompt** | 1 | up to N models x M samples |
+| **Quality signal** | none | code execution / numeric vote / LLM judge |
+| **Wrong-answer detection** | none | calibrated abstention |
+| **Self-improvement** | none | Thompson-sampling bandit on outcomes |
+| **Refinement** | none | optional critique -> revise pass |
+| **Eval harness** | DIY | built-in, with regression gating |
+| **Privacy** | local | local |
+| **Cost** | one call | N x M calls (the trade) |
+
+The trade: **per-prompt latency goes 5-20x and cost goes 10-50x, in exchange for measurably better answers.** If you want fast and cheap, this isn't it.
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/sambawy01/fleet-router.git
 cd fleet-router
-python -m venv venv
-source venv/bin/activate
+python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
+
+# Make sure Ollama is running with at least one model pulled
+ollama pull deepseek-v4-pro:cloud
+
+# Ask away
+fleet "solve 2x + 5 = 13"
+fleet --parallel "compare microservices vs monolith"
+fleet --model glm-5.1 "write a poem about lighthouses"
+
+# Run the eval harness
+fleet --eval evals/fixtures/hard/
 ```
 
-## Usage
+---
 
-### CLI
+## Architecture
+
+```
+Prompt -> Classifier -> Router Decision -> Dispatcher -> Verifier -> Synthesizer -> Result
+              |              |                |           |            |
+         keywords +     confidence      parallel     per-tag     pick best
+         embeddings     threshold        or single    scoring     by heuristic
+```
+
+### The synthesis layer
+
+| Tag | Verifier | Quality Signal |
+|---|---|---|
+| `code` | `CodeVerifier` | AST validity + (opt-in) sandboxed execution |
+| `math` | `MathVerifier` | Numeric extraction + cross-sample majority vote |
+| `reasoning`, `creative`, `summarize`, `translate`, `general` | `JudgeVerifier` | LLM-as-judge with tag-specific rubric |
+| any (fallback) | `HeuristicVerifier` | Length / AST / diversity (legacy synthesizer) |
+
+---
+
+## Features
+
+### Verifier-driven synthesis
+No more "longest" or "lexically diverse" winning. Each tag has an executable or judge-based scorer. Code is AST-validated (and optionally sandbox-executed). Math runs majority vote over numeric answers. Reasoning/creative/etc. go to an LLM judge with a tag-specific rubric.
+
+### Self-consistency sampling
+Math and reasoning tags sample the same model N times (default 5 / 3) and majority-vote. On GSM8K-class problems this closes most of the gap to frontier models with the same base LLM.
+
+### Calibrated abstention
+When no candidate clears the quality bar, fleet returns a structured "I don't know -- here are the top candidates and why I can't pick" instead of a confident wrong answer.
+
+### Disagreement escalation
+Opt-in: when the verifier abstains or the winner score is weak, fleet hands all candidates to a configured stronger Ollama model for arbitration.
+
+### Multi-pass refinement
+Opt-in: critique pass identifies errors, revise pass fixes them. ~5-20pp quality lift on most tasks. Doubles latency.
+
+### Outcome-driven bandit
+Thompson-sampling Beta posteriors per `(tag, model)`. Reward = verifier/judge score (NOT latency). Persists to JSON. Learns which open-source model is actually best for *your* prompt distribution.
+
+### Thinking-model aware
+`<thinking>...</thinking>` chain-of-thought blocks are stripped before scoring AND before returning, so reasoning models aren't penalized for verbose internal reasoning and users only see the final answer.
+
+### Eval harness with regression gating
+JSONL fixtures + per-tag scorers + multi-choice + comparison harness. `fleet --eval --baseline path.json` exits non-zero on >3pp regression -- wire it into CI.
+
+---
+
+## Models
+
+This project routes **only to open-source LLMs running on Ollama** (local or `:cloud` tags). Default config:
+
+| Model | Best For | Ollama Tag |
+|---|---|---|
+| **DeepSeek V4 Pro** | Code, reasoning, math | `deepseek-v4-pro:cloud` |
+| **GLM 5.1** | Creative writing, Chinese, long context | `glm-5.1:cloud` |
+| **MiniMax 2.7** | Summarization, dialogue | `minimax-m2.7:cloud` |
+| **DeepSeek V4 Flash** | Fast drafts | `deepseek-v4-flash:cloud` |
+
+Drop in any other Ollama model -- Qwen, Llama, GPT-OSS, etc. -- by adding it to `~/.fleet/config.yaml`.
+
+> **Note:** OpenAI / Anthropic / proprietary providers are **intentionally not supported.** This is by design -- the value prop is "best outcome on open-source models."
+
+---
+
+## CLI
 
 ```bash
-# Auto-route (single or parallel based on confidence)
-fleet "write a login function"
+fleet "<prompt>"                        # auto-route, verifier synthesis
+fleet --parallel "<prompt>"             # force parallel mode
+fleet --model glm-5.1 "<prompt>"        # force a specific model
+fleet --config ~/.fleet/config.yaml ...  # custom config
+fleet -v "<prompt>"                      # verbose logging to stderr
 
-# Force parallel ensemble
-fleet --parallel "write a login function"
-
-# Force a specific model
-fleet --model glm-5.1 "write a poem"
-
-# Custom config
-fleet --config ~/.fleet/config.yaml "refactor this auth module"
+# Eval harness
+fleet --eval evals/fixtures/                                # run all fixtures
+fleet --eval evals/fixtures/hard/                           # discriminating set
+fleet --eval evals/fixtures/hard/ --save-baseline base.json # snapshot
+fleet --eval evals/fixtures/hard/ --baseline base.json      # regression gate
 ```
 
-### Python
+Exit codes: `0` success, `1` error, `2` sentinel error (e.g. no model available), `3` regression detected, `130` interrupted.
+
+---
+
+## Python API
 
 ```python
 import asyncio
 from fleet import FleetRouter, load_config
 
-config = load_config()
-router = FleetRouter(config)
+router = FleetRouter(load_config())
 
 async def main():
-    result = await router.ask("write a python function")
-    print(result)
+    answer = await router.ask("solve 5x - 3 = 12")
+    print(answer)
 
 asyncio.run(main())
 ```
 
-### Claude Code Skill
+### Side-by-side comparison
 
-Add `fleet/SKILL.md` to your `~/.claude/skills/` directory and invoke with:
+```python
+from evals.compare import compare
 
+report = await compare(
+    a=("baseline", baseline_router),
+    b=("fleet",    fleet_router),
+    fixtures_dir="evals/fixtures/hard/",
+)
+print(report["summary"])
 ```
-/fleet "write a login function"
-```
+
+---
 
 ## Configuration
 
-Create `~/.fleet/config.yaml`:
+Resolution order: explicit `--config` path -> `~/.fleet/config.yaml` -> bundled `fleet/config.yaml` -> built-in defaults.
 
 ```yaml
 ollama:
@@ -90,63 +183,176 @@ models:
   deepseek-v4-pro:
     tags: [code, reasoning, math]
     priority: 1
+    class: reasoning            # "chat" or "reasoning"
+    api_model: deepseek-v4-pro:cloud  # optional override
   glm-5.1:
     tags: [creative, chinese, long_context]
     priority: 2
-  minimax-m2.7:
-    tags: [summarize, dialogue]
-    priority: 3
+  qwen-tiny:                    # small open-source model as judge / classifier
+    tags: [general]
+    priority: 9
 
 thresholds:
-  single_confidence: 0.8
-  parallel_timeout: 60
+  single_confidence: 0.8        # below -> parallel mode
+  parallel_timeout: 60          # seconds per dispatch
   max_parallel: 3
 
 classifier:
   embeddings_model: all-MiniLM-L6-v2
+  mode: keyword                 # "keyword" or "llm"
+  llm_model: ""                 # set to an Ollama model when mode=llm
+
+synthesis:
+  mode: verifier                # "verifier" (default) or "heuristic"
+  judge_model: ""               # set to e.g. "qwen-tiny" to enable LLM-as-judge
+  abstention_threshold: 0.4
+  code_execute: false           # opt-in: subprocess execution of candidate code
+  code_execute_timeout: 5
+
+sampling:
+  samples_by_tag:
+    math: 5                     # self-consistency on math
+    reasoning: 3
+    default: 1
+  temperature: 0.7
+
+refinement:
+  enabled: false                # opt-in: critique -> revise pass
+  critique_model: ""
+
+escalation:
+  enabled: false                # opt-in: arbitrate divergent answers
+  model: ""
+  score_threshold: 0.6
+
+retrieval:
+  enabled: false
+  tags: []                      # tags to augment, e.g. [reasoning, general]
+  provider: noop                # "noop" or "websearch" (needs SERP_API_KEY)
+  max_chars: 4000
+
+bandit:
+  enabled: false                # outcome-driven Thompson sampling
+  state_path: ""                # JSON file for posterior persistence
 ```
 
-## How it works
+---
 
-### Task Classification
+## How It Works
 
-Uses keyword matching (fast) + optional sentence-transformer embeddings (accurate) to map prompts to task tags. Confidence is reduced when uncertainty markers like "best", "compare", or "review" are detected.
+### Classification
+
+Keyword regex with **saturating exponential** scoring (1 match -> 0.55, 2 -> 0.80, 3+ -> 0.91). Single accidental matches stay below the parallel-mode threshold. Optional sentence-transformer embedding adds a bounded bonus to the dominant tag. Optional `LLMClassifier` for harder cases.
 
 ### Routing Decision
 
 | Confidence | Mode | Models Called |
-|-----------|------|---------------|
-| ≥ 0.8 | Single | 1 (best match) |
-| < 0.8 | Parallel | Up to 3 (top matches) |
+|---|---|---|
+| >= 0.8 | Single | 1 (best by tag, by priority OR by bandit) |
+| < 0.8 or `--parallel` | Parallel | up to N models x M samples |
 
-### Synthesis
+### Verification
 
-Rule-based selection — no extra LLM call:
+Per-tag verifiers replace heuristics. `CodeVerifier` AST-walks for dangerous patterns (subprocess, eval, file I/O, network) and **refuses to execute** unsafe code even with `code_execute=true`. `MathVerifier` extracts final numeric answers (handling `\boxed{}`, "answer is X", scientific notation, decimals) and majority-votes. `JudgeVerifier` sends labeled candidates to an Ollama judge with a tag-specific rubric and parses ranked output (with JSON-extraction fallback for verbose models).
 
-- **Code**: syntax-valid via `ast.parse` → longest valid → longest overall
-- **Creative**: highest lexical diversity (unique words / total words) → longest
-- **Math/Reasoning**: pairwise similarity via `difflib` → longest explanation
-- **Summarize**: shortest non-empty response
-- **General**: consensus score (similarity to other answers) → longest → return all
+### Calibrated Abstention
+
+When the winner's score is below `abstention_threshold` OR the verifier flags abstention, fleet returns:
+
+```
+(uncertain -- <reason>)
+
+Top candidates considered:
+
+--- model-a#0 (score=0.30) ---
+<answer>
+
+--- model-b#0 (score=0.30) ---
+<answer>
+```
+
+Beats a confident wrong answer.
+
+### Outcome-Driven Bandit
+
+Thompson sampling over `(tag, model)` Beta posteriors. **Reward signal = verifier/judge score in [0,1]** -- never latency, never cost. Each sampled candidate is an independent observation, so `samples_per_model=5` gives the bandit 5x more signal per dispatch. State persists atomically to `~/.fleet/bandit.json`. With bandit enabled, the router Thompson-ranks the **full** tag-matching pool (not just `max_parallel` head-of-line candidates) so it can explore.
+
+---
+
+## Eval Harness
+
+Fixtures are JSONL -- one case per line. Each gets routed through fleet and scored by a tag-default or per-case scorer.
+
+```jsonl
+{"tag": "code", "prompt": "Write merge_intervals(intervals)", "test_code": "assert merge_intervals([[1,3],[2,6]]) == [[1,6]]"}
+{"tag": "math", "prompt": "What is gcd(252, 105)?", "expected": 21}
+{"tag": "reasoning", "scorer": "multi_choice", "prompt": "...\n(A) ... (B) ...", "expected": "B"}
+```
+
+Built-in scorers:
+
+| Scorer | Score = | Used For |
+|---|---|---|
+| `CodeExecScorer` | 1.0 if `code + test_code` exits 0, else 0.0 | code |
+| `NumericMatchScorer` | 1.0 if final number matches `expected` (rel-tol) | math |
+| `MultipleChoiceScorer` | 1.0 if extracted A/B/C/D/E matches | reasoning (MMLU-style) |
+| `KeywordContainsScorer` | fraction of expected keywords present | summarize, creative, general |
+
+---
 
 ## Testing
 
 ```bash
-pytest tests/ -v
+pytest tests/                # 189 passing, 1 skipped
+pytest tests/verifiers/      # verifier framework
+pytest tests/evals/          # harness + scorers
 ```
 
-55 tests covering:
-- Config loading, defaults, malformed YAML
-- Keyword classification, embeddings, uncertainty penalty
-- Model discovery, priority sorting, fallback
-- Async dispatch, HTTP errors, timeouts, empty strings
-- Syntax validation, lexical diversity, consensus logic
-- End-to-end orchestration with mocked Ollama
+189 tests cover providers, verifiers (code/math/judge/heuristic), self-consistency, escalation, refinement, abstention, bandit (selection + posterior updates + persistence), event bus, LLM classifier, retrieval, eval harness + comparison harness, CLI (including eval subcommand), and config validation. The 1 skipped test runs only when `sentence-transformers` is installed.
+
+---
+
+## Roadmap
+
+| Status | Feature |
+|---|---|
+| Shipped | Verifier framework, self-consistency, calibrated abstention, bandit, eval harness, refinement, escalation, retrieval scaffold, event bus |
+| Next | Class-aware streaming with thinking-model-safe cancellation |
+| Considering | LLM classifier as default, retrieval for `general` tag by default, Strategy plugin registry via entry points |
+
+---
+
+## Project Layout
+
+```
+fleet-router/
+├── fleet/
+│   ├── classifier.py          # keyword + embeddings
+│   ├── llm_classifier.py      # zero-shot via instruct model
+│   ├── config.py              # YAML schema + validation
+│   ├── dispatcher.py          # multi-sample parallel dispatch
+│   ├── registry.py            # Ollama model discovery
+│   ├── router.py              # orchestration: classify -> dispatch -> verify -> ...
+│   ├── synthesizer.py         # legacy heuristic picker
+│   ├── bandit.py              # Thompson sampling + persistence
+│   ├── events.py              # typed event bus + sinks
+│   ├── retrieval.py           # NoOp + WebSearch (SerpAPI-shape)
+│   ├── providers/             # Provider Protocol + Ollama
+│   └── verifiers/             # Verifier Protocol + per-tag scorers
+├── evals/
+│   ├── runner.py              # load -> score -> aggregate -> compare
+│   ├── compare.py             # side-by-side router comparison
+│   ├── scorers/               # code-exec, numeric, multi-choice, keyword
+│   └── fixtures/              # easy + hard JSONL sets
+└── tests/                     # 189 tests across 24 files
+```
+
+---
 
 ## Requirements
 
 - Python 3.12+
-- Ollama with cloud models (or any OpenAI-compatible endpoint)
+- Ollama (local or `:cloud` tags)
 - Optional: `sentence-transformers` for embedding-based classification
 
 ## License

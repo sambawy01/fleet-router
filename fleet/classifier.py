@@ -1,12 +1,15 @@
 """Lightweight prompt classifier: keywords + optional embeddings."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 try:
     import numpy as np
-except Exception:
+except ImportError:
     np = None  # type: ignore[misc]
 
 
@@ -48,12 +51,24 @@ KEYWORD_MAP: dict[str, list[re.Pattern[str]]] = {
     ]),
 }
 
-# Uncertainty keywords that trigger parallel mode
+# Uncertainty keywords that bias toward parallel mode
 UNCERTAINTY_MARKERS: list[re.Pattern[str]] = _compile([
     r"\bbest\b", r"\bcompare\b", r"\breview\b", r"\bimprove\b",
     r"\boptimize\b", r"\bwhich\b.*\bbetter\b", r"\bwhat\b.*\bthink\b",
     r"\bsuggest\b", r"\brecommend\b",
 ])
+
+# Saturating per-tag confidence as a function of keyword match count.
+# 1 match → 0.55, 2 → 0.80, 3 → 0.91, 4 → 0.96. Single accidental hits
+# (e.g. "I had an error yesterday") stay below the single_confidence
+# threshold so the router falls back to parallel mode.
+_SATURATION_BASE = 0.45
+
+# Cosine threshold below which the embedding signal is treated as noise.
+_EMBED_RELEVANCE_FLOOR = 0.30
+# Multiplier applied to the dominant tag's similarity when blending into
+# the keyword score; small enough to refine, not override.
+_EMBED_BONUS_WEIGHT = 0.20
 
 
 class TaskClassifier:
@@ -68,13 +83,17 @@ class TaskClassifier:
             try:
                 from sentence_transformers import SentenceTransformer
                 self._model = SentenceTransformer(embeddings_model)
-                # Precompute embeddings for each tag description
                 self._tag_embeddings = {
-                    tag: self._model.encode(f"Task: {tag}. {self._tag_description(tag)}")
+                    tag: self._model.encode(
+                        f"Task: {tag}. {self._tag_description(tag)}"
+                    )
                     for tag in KEYWORD_MAP
                 }
-            except Exception:
-                # Graceful fallback if sentence-transformers unavailable
+            except Exception as exc:  # noqa: BLE001 — graceful degradation
+                logger.warning(
+                    "embeddings model %r unavailable (%s); using keywords only",
+                    embeddings_model, exc,
+                )
                 self._model = None
                 self._tag_embeddings = None
 
@@ -94,33 +113,49 @@ class TaskClassifier:
     def _cosine_similarity(a, b) -> float:
         if np is None:
             return 0.0
-        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom == 0.0:
+            return 0.0
+        return float(np.dot(a, b) / denom)
 
     def classify(self, prompt: str) -> tuple[str, float]:
         prompt_lower = prompt.lower()
 
-        # 1. Keyword scoring
+        # 1. Keyword scoring — saturating exponential so a single accidental
+        # match cannot trip the single-model confidence threshold.
         scores: dict[str, float] = {}
         for tag, patterns in KEYWORD_MAP.items():
             matches = sum(1 for p in patterns if p.search(prompt_lower))
-            scores[tag] = min(matches * 0.85, 1.0)
+            scores[tag] = (1.0 - _SATURATION_BASE ** matches) if matches > 0 else 0.0
 
-        # 2. Uncertainty penalty
+        # 2. Uncertainty penalty (capped at 0.4)
         uncertainty = sum(1 for p in UNCERTAINTY_MARKERS if p.search(prompt_lower))
         uncertainty_penalty = min(uncertainty * 0.15, 0.4)
 
-        # 3. Embedding similarity (if available)
-        if self._model and self._tag_embeddings:
-            prompt_emb = self._model.encode(prompt)
-            for tag, tag_emb in self._tag_embeddings.items():
-                sim = self._cosine_similarity(prompt_emb, tag_emb)
-                scores[tag] = max(scores[tag], sim * 0.8)
+        # 3. Embedding refinement — bonus only to the embedding-preferred tag,
+        # only when cosine similarity clears a relevance floor. Refines the
+        # keyword score; never overrides a strong keyword signal alone.
+        if self._model is not None and self._tag_embeddings is not None:
+            try:
+                prompt_emb = self._model.encode(prompt)
+                sims = {
+                    tag: self._cosine_similarity(prompt_emb, tag_emb)
+                    for tag, tag_emb in self._tag_embeddings.items()
+                }
+                best_emb_tag = max(sims, key=sims.get)
+                if sims[best_emb_tag] >= _EMBED_RELEVANCE_FLOOR:
+                    scores[best_emb_tag] = min(
+                        1.0,
+                        scores.get(best_emb_tag, 0.0)
+                        + sims[best_emb_tag] * _EMBED_BONUS_WEIGHT,
+                    )
+            except Exception as exc:  # noqa: BLE001 — embeddings are best-effort
+                logger.warning("embedding classify failed: %s", exc)
 
-        # Pick best tag
-        best_tag = max(scores, key=scores.get) if any(scores.values()) else "general"
-        best_score = scores.get(best_tag, 0.0)
+        if not any(scores.values()):
+            return "general", 0.0
 
-        # Apply uncertainty penalty
+        best_tag = max(scores, key=scores.get)
+        best_score = scores[best_tag]
         confidence = max(0.0, best_score - uncertainty_penalty)
-
         return best_tag, confidence

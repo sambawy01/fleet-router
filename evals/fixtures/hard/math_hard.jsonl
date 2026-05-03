@@ -1,0 +1,8 @@
+{"tag": "math", "prompt": "If 2^x = 16 and 3^y = 27, what is x + y?", "expected": 7}
+{"tag": "math", "prompt": "What is the sum of the first 10 prime numbers (starting from 2)?", "expected": 129}
+{"tag": "math", "prompt": "A bag contains 5 red and 3 blue marbles. If you draw 2 marbles without replacement, what is the probability that both are red? Give the answer as a decimal rounded to 4 places.", "expected": 0.3571}
+{"tag": "math", "prompt": "Find the smallest positive integer n such that 1 + 2 + 3 + ... + n is strictly greater than 1000.", "expected": 45}
+{"tag": "math", "prompt": "If f(x) = x^2 + 3x + 2, what is f(f(2))?", "expected": 182}
+{"tag": "math", "prompt": "How many distinct ways can the letters of the word MISSISSIPPI be arranged?", "expected": 34650}
+{"tag": "math", "prompt": "What is the greatest common divisor of 252 and 105?", "expected": 21}
+{"tag": "math", "prompt": "If you flip a fair coin 10 times, what is the expected number of times the pattern 'heads followed immediately by tails' appears? Give the answer as a decimal.", "expected": 2.25}

@@ -1,0 +1,103 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import aiohttp
+import pytest
+
+from fleet.providers.base import GenerateRequest
+from fleet.providers.ollama import OllamaProvider
+
+
+def _setup_post(mock_post, response_json=None, raise_for_status_error=None, post_error=None):
+    if post_error:
+        mock_post.side_effect = post_error
+        return
+    mock_response = AsyncMock()
+    mock_response.json = AsyncMock(return_value=response_json or {"response": "ok"})
+    if raise_for_status_error:
+        mock_response.raise_for_status = MagicMock(side_effect=raise_for_status_error)
+    else:
+        mock_response.raise_for_status = MagicMock()
+    mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post.return_value.__aexit__ = AsyncMock(return_value=False)
+
+
+@pytest.mark.asyncio
+async def test_ollama_single_sample():
+    p = OllamaProvider()
+    req = GenerateRequest(model="glm", prompt="hi")
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_post(mock_post, response_json={"response": "answer"})
+        result = await p.generate(req)
+    assert result == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_multi_sample():
+    """samples=N must produce N independent calls and return N entries."""
+    p = OllamaProvider()
+    req = GenerateRequest(model="glm", prompt="hi", samples=3)
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_post(mock_post, response_json={"response": "x"})
+        result = await p.generate(req)
+    assert len(result) == 3
+    assert all(r == "x" for r in result)
+    assert mock_post.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ollama_passes_temperature():
+    p = OllamaProvider()
+    req = GenerateRequest(model="glm", prompt="hi", temperature=0.9)
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_post(mock_post)
+        await p.generate(req)
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["options"]["temperature"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_ollama_http_error_yields_none():
+    p = OllamaProvider()
+    req = GenerateRequest(model="glm", prompt="hi")
+    err = aiohttp.ClientResponseError(
+        request_info=AsyncMock(real_url="http://x"), history=(), status=500
+    )
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        _setup_post(mock_post, raise_for_status_error=err)
+        result = await p.generate(req)
+    assert result == [None]
+
+
+@pytest.mark.asyncio
+async def test_ollama_zero_samples_returns_empty():
+    p = OllamaProvider()
+    req = GenerateRequest(model="glm", prompt="hi", samples=0)
+    result = await p.generate(req)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_ollama_list_models():
+    p = OllamaProvider()
+    with patch("aiohttp.ClientSession.get") as mock_get:
+        mock_response = AsyncMock()
+        mock_response.json = AsyncMock(return_value={
+            "models": [{"name": "glm-5.1:fp16"}, {"name": "deepseek:latest"}]
+        })
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.return_value.__aexit__ = AsyncMock(return_value=False)
+        models = await p.list_models()
+    names = sorted(m.name for m in models)
+    assert names == ["deepseek", "glm-5.1"]
+    assert all(m.provider == "ollama" for m in models)
+
+
+@pytest.mark.asyncio
+async def test_ollama_list_models_handles_errors():
+    p = OllamaProvider()
+    with patch("aiohttp.ClientSession.get") as mock_get:
+        mock_get.side_effect = aiohttp.ClientError("down")
+        models = await p.list_models()
+    assert models == []

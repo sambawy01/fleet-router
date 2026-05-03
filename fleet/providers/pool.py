@@ -1,0 +1,49 @@
+"""Provider pool — currently holds only the Ollama provider.
+
+Kept as a thin abstraction so testability is uniform (Verifier/Classifier
+accept any Provider) and future Ollama-compatible backends (vLLM, LM Studio
+with the Ollama API surface) can be registered without touching call sites.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+from fleet.config import Config
+from fleet.providers.base import Provider
+from fleet.providers.ollama import OllamaProvider
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderPool:
+    """Holds initialized Provider instances keyed by name."""
+
+    def __init__(self, providers: Optional[dict[str, Provider]] = None):
+        self._providers: dict[str, Provider] = dict(providers or {})
+
+    def register(self, provider: Provider) -> None:
+        self._providers[provider.name] = provider
+
+    def get(self, name: str) -> Optional[Provider]:
+        return self._providers.get(name)
+
+    def names(self) -> list[str]:
+        return sorted(self._providers.keys())
+
+    @classmethod
+    def from_config(cls, config: Config) -> "ProviderPool":
+        timeout = config.thresholds.parallel_timeout
+        pool = cls()
+        pool.register(OllamaProvider(
+            base_url=config.ollama.base_url,
+            timeout=timeout,
+        ))
+        return pool
+
+    async def aclose_all(self) -> None:
+        for p in self._providers.values():
+            try:
+                await p.aclose()
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning("provider %s aclose failed: %s", p.name, exc)

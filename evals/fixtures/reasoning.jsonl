@@ -1,0 +1,3 @@
+{"tag": "reasoning", "prompt": "Compare the tradeoffs between SQL and NoSQL databases for a high-write event logging system.", "expected": ["write throughput", "schema", "consistency", "scale"]}
+{"tag": "reasoning", "prompt": "Explain why correlation does not imply causation, with one concrete example.", "expected": ["correlation", "causation", "example"]}
+{"tag": "reasoning", "prompt": "What are the main pros and cons of using microservices architecture vs a monolith?", "expected": ["microservice", "monolith", "deploy", "complexity"]}

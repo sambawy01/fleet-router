@@ -1,3 +1,8 @@
+---
+name: fleet
+description: Adaptive parallel LLM router for Ollama cloud models. Use when the user asks to "/fleet <prompt>", wants to route a prompt to the best Ollama cloud model, or wants to compare/ensemble multiple models on a single prompt.
+---
+
 # Fleet Router
 
 Invoke with: `/fleet <prompt>`
@@ -29,4 +34,4 @@ An adaptive parallel LLM router that auto-classifies prompts and routes them to 
 
 ## Configuration
 
-Edit `~/.fleet/config.yaml` to adjust thresholds and model priorities.
+Edit `~/.fleet/config.yaml` to adjust thresholds and model priorities. If absent, the router falls back to the bundled `fleet/config.yaml` shipped with the package.

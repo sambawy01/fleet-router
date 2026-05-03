@@ -1,66 +1,240 @@
 """Load fleet/config.yaml into typed dataclasses."""
 from __future__ import annotations
 
-import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CONFIG_PATH = Path.home() / ".fleet" / "config.yaml"
+BUNDLED_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+
+_DEFAULT_BASE_URL = "http://localhost:11434"
+_DEFAULT_EMBEDDINGS_MODEL = "all-MiniLM-L6-v2"
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-@dataclass(frozen=True)
+@dataclass
 class OllamaConfig:
-    base_url: str = "http://localhost:11434"
+    base_url: str = _DEFAULT_BASE_URL
 
 
-@dataclass(frozen=True)
+@dataclass
 class ModelEntry:
     tags: list[str] = field(default_factory=list)
     priority: int = 99
+    # "chat" or "reasoning". Reserved for class-aware early-exit policies in
+    # streaming dispatch — a fast chat model should not cancel a reasoning
+    # model mid-thought, since the first tokens of a reasoning model are
+    # internal chain-of-thought, not the final answer.
+    model_class: str = "chat"
+    # Provider name in the ProviderPool. This project ships only "ollama";
+    # the field exists so future Ollama-compatible backends (vLLM,
+    # LM Studio) can register additional providers without schema changes.
+    provider: str = "ollama"
+    # Optional override of the provider-side model identifier. Defaults to
+    # the registry key. Use this when the canonical short name differs from
+    # the Ollama tag (e.g. key "deepseek" → "deepseek-v4-pro:cloud").
+    api_model: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass
 class ThresholdConfig:
     single_confidence: float = 0.8
     parallel_timeout: int = 60
     max_parallel: int = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class ClassifierConfig:
-    embeddings_model: str = "all-MiniLM-L6-v2"
+    embeddings_model: str = _DEFAULT_EMBEDDINGS_MODEL
+    # "keyword" | "llm" — opt into LLM-based classification.
+    mode: str = "keyword"
+    # Model to use when mode=="llm". Empty falls back to keyword.
+    llm_model: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass
+class SynthesisConfig:
+    """Controls which selection strategy turns N candidates into 1 answer."""
+    # "verifier" (executable + LLM judge) or "heuristic" (length/AST/diversity).
+    mode: str = "verifier"
+    # Model to use as LLM-judge (registry key from `models`). Empty = no judge,
+    # JudgeVerifier not registered, falls through to HeuristicVerifier.
+    judge_model: str = ""
+    # Verifier-set winner.score below this triggers calibrated abstention.
+    abstention_threshold: float = 0.4
+    # CodeVerifier only: opt into running candidate code in a subprocess.
+    # OFF by default — running LLM-generated code is a real RCE vector.
+    code_execute: bool = False
+    code_execute_timeout: int = 5
+
+
+@dataclass
+class SamplingConfig:
+    """Self-consistency: how many independent samples per model per tag.
+
+    Math/reasoning benefit hugely from N>1 (Wang et al., +18pp on GSM8K).
+    Creative/summarize don't — diversity from temperature is the point.
+    """
+    samples_by_tag: dict[str, int] = field(
+        default_factory=lambda: {
+            "math": 5,
+            "reasoning": 3,
+            "default": 1,
+        }
+    )
+    temperature: float = 0.7
+
+
+@dataclass
+class RefinementConfig:
+    """Optional draft → critique → revise loop. OFF by default; ~5-20pp gain
+    on most tasks but doubles latency."""
+    enabled: bool = False
+    critique_model: str = ""  # empty = no refinement
+
+
+@dataclass
+class EscalationConfig:
+    """When the verifier abstains or scores low, escalate to a stronger
+    model with all candidates as context for arbitration."""
+    enabled: bool = False
+    model: str = ""
+    # Score below which we escalate even if the verifier didn't abstain.
+    score_threshold: float = 0.6
+
+
+@dataclass
+class RetrievalConfig:
+    """Optional context augmentation for tags that benefit from grounding."""
+    enabled: bool = False
+    # Comma-list of tags that should be augmented (e.g. "general,reasoning").
+    tags: list[str] = field(default_factory=list)
+    # Provider type: "noop" | "websearch" (websearch needs SERP_API_KEY).
+    provider: str = "noop"
+    # Max characters of retrieved context to prepend.
+    max_chars: int = 4000
+
+
+@dataclass
+class BanditConfig:
+    """Outcome-driven Thompson-sampling bandit for (tag, model) selection."""
+    enabled: bool = False
+    # Where to persist Beta posteriors. Empty = in-memory only.
+    state_path: str = ""
+
+
+@dataclass
 class Config:
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     models: dict[str, ModelEntry] = field(default_factory=dict)
     thresholds: ThresholdConfig = field(default_factory=ThresholdConfig)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
+    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    refinement: RefinementConfig = field(default_factory=RefinementConfig)
+    escalation: EscalationConfig = field(default_factory=EscalationConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    bandit: BanditConfig = field(default_factory=BanditConfig)
 
 
-def _clean_model_key(key: str) -> str:
-    """Strip :cloud suffix for clean lookup."""
-    return key.removesuffix(":cloud")
+def clean_model_key(key: str) -> str:
+    """Strip the :cloud suffix so YAML keys like `glm-5.1:cloud` and CLI args
+    like `--model glm-5.1` resolve to the same registry entry."""
+    return str(key).removesuffix(":cloud")
 
 
-def load_config(path: Path | None = None) -> Config:
-    config_path = path or DEFAULT_CONFIG_PATH
-    if not config_path.exists():
+# Backwards-compatible alias.
+_clean_model_key = clean_model_key
+
+
+def _validate_base_url(url: str) -> str:
+    """Reject schemes other than http/https. Warn (don't reject) on plaintext
+    http to non-local hosts so misconfigurations are visible in logs."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        logger.warning(
+            "ollama.base_url scheme %r is not http/https; using default %s",
+            parsed.scheme, _DEFAULT_BASE_URL,
+        )
+        return _DEFAULT_BASE_URL
+    if not parsed.hostname:
+        logger.warning("ollama.base_url has no hostname; using default %s", _DEFAULT_BASE_URL)
+        return _DEFAULT_BASE_URL
+    if parsed.scheme == "http" and parsed.hostname not in _LOCAL_HOSTS:
+        logger.warning(
+            "ollama.base_url uses plaintext http to non-local host %s; consider https",
+            parsed.hostname,
+        )
+    return url
+
+
+def _coerce_tags(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(t) for t in raw if t is not None]
+    if isinstance(raw, str):
+        return [raw]
+    return []
+
+
+def _coerce_int(raw: Any, default: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(raw: Any, default: float) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_config(path: Path | str | None = None) -> Config:
+    """Resolve a config file: explicit path > ~/.fleet/config.yaml > bundled
+    fleet/config.yaml > built-in defaults."""
+    config_path: Path | None = None
+    if path is not None:
+        config_path = Path(path)
+        if not config_path.exists():
+            # Explicit path missing: honor user intent and return defaults
+            # rather than silently falling back to the bundled file.
+            logger.warning("config %s not found; using built-in defaults", config_path)
+            return Config()
+    elif DEFAULT_CONFIG_PATH.exists():
+        config_path = DEFAULT_CONFIG_PATH
+    elif BUNDLED_CONFIG_PATH.exists():
+        # Bootstrap fresh installs with the model list that ships in the package.
+        config_path = BUNDLED_CONFIG_PATH
+
+    if config_path is None:
         return Config()
 
     try:
         raw = yaml.safe_load(config_path.read_text()) or {}
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        logger.warning("malformed YAML in %s (%s); using built-in defaults", config_path, exc)
+        return Config()
+    if not isinstance(raw, dict):
+        logger.warning(
+            "config root in %s is not a mapping; using built-in defaults", config_path
+        )
         return Config()
 
     ollama_raw = raw.get("ollama", {})
     if not isinstance(ollama_raw, dict):
         ollama_raw = {}
-    ollama = OllamaConfig(base_url=ollama_raw.get("base_url", "http://localhost:11434"))
+    base_url = ollama_raw.get("base_url", _DEFAULT_BASE_URL)
+    if not isinstance(base_url, str):
+        base_url = _DEFAULT_BASE_URL
+    ollama = OllamaConfig(base_url=_validate_base_url(base_url))
 
     models_raw = raw.get("models", {})
     if not isinstance(models_raw, dict):
@@ -69,26 +243,92 @@ def load_config(path: Path | None = None) -> Config:
     for key, val in models_raw.items():
         if not isinstance(val, dict):
             continue
-        clean = _clean_model_key(key)
-        models[clean] = ModelEntry(
-            tags=val.get("tags", []),
-            priority=val.get("priority", 99),
+        raw_class = val.get("class", "chat")
+        model_class = raw_class if raw_class in ("chat", "reasoning") else "chat"
+        provider = str(val.get("provider", "ollama")) or "ollama"
+        api_model = val.get("api_model")
+        models[clean_model_key(key)] = ModelEntry(
+            tags=_coerce_tags(val.get("tags")),
+            priority=_coerce_int(val.get("priority"), 99),
+            model_class=model_class,
+            provider=provider,
+            api_model=str(api_model) if api_model else "",
         )
 
     thresh_raw = raw.get("thresholds", {})
     if not isinstance(thresh_raw, dict):
         thresh_raw = {}
     thresholds = ThresholdConfig(
-        single_confidence=thresh_raw.get("single_confidence", 0.8),
-        parallel_timeout=thresh_raw.get("parallel_timeout", 60),
-        max_parallel=thresh_raw.get("max_parallel", 3),
+        single_confidence=_coerce_float(thresh_raw.get("single_confidence"), 0.8),
+        parallel_timeout=_coerce_int(thresh_raw.get("parallel_timeout"), 60),
+        max_parallel=_coerce_int(thresh_raw.get("max_parallel"), 3),
     )
 
     clf_raw = raw.get("classifier", {})
     if not isinstance(clf_raw, dict):
         clf_raw = {}
+    embeddings_model = clf_raw.get("embeddings_model", _DEFAULT_EMBEDDINGS_MODEL)
+    if not isinstance(embeddings_model, str):
+        embeddings_model = _DEFAULT_EMBEDDINGS_MODEL
+    clf_mode = str(clf_raw.get("mode", "keyword"))
+    if clf_mode not in ("keyword", "llm"):
+        clf_mode = "keyword"
     classifier = ClassifierConfig(
-        embeddings_model=clf_raw.get("embeddings_model", "all-MiniLM-L6-v2")
+        embeddings_model=embeddings_model,
+        mode=clf_mode,
+        llm_model=str(clf_raw.get("llm_model", "")),
+    )
+
+    syn_raw = raw.get("synthesis", {}) if isinstance(raw.get("synthesis"), dict) else {}
+    syn_mode = str(syn_raw.get("mode", "verifier"))
+    if syn_mode not in ("verifier", "heuristic"):
+        syn_mode = "verifier"
+    synthesis = SynthesisConfig(
+        mode=syn_mode,
+        judge_model=str(syn_raw.get("judge_model", "")),
+        abstention_threshold=_coerce_float(syn_raw.get("abstention_threshold"), 0.4),
+        code_execute=bool(syn_raw.get("code_execute", False)),
+        code_execute_timeout=_coerce_int(syn_raw.get("code_execute_timeout"), 5),
+    )
+
+    samp_raw = raw.get("sampling", {}) if isinstance(raw.get("sampling"), dict) else {}
+    samp_by_tag_raw = samp_raw.get("samples_by_tag", {})
+    samp_by_tag: dict[str, int] = {"math": 5, "reasoning": 3, "default": 1}
+    if isinstance(samp_by_tag_raw, dict):
+        for k, v in samp_by_tag_raw.items():
+            samp_by_tag[str(k)] = max(1, _coerce_int(v, 1))
+    sampling = SamplingConfig(
+        samples_by_tag=samp_by_tag,
+        temperature=_coerce_float(samp_raw.get("temperature"), 0.7),
+    )
+
+    ref_raw = raw.get("refinement", {}) if isinstance(raw.get("refinement"), dict) else {}
+    refinement = RefinementConfig(
+        enabled=bool(ref_raw.get("enabled", False)),
+        critique_model=str(ref_raw.get("critique_model", "")),
+    )
+
+    esc_raw = raw.get("escalation", {}) if isinstance(raw.get("escalation"), dict) else {}
+    escalation = EscalationConfig(
+        enabled=bool(esc_raw.get("enabled", False)),
+        model=str(esc_raw.get("model", "")),
+        score_threshold=_coerce_float(esc_raw.get("score_threshold"), 0.6),
+    )
+
+    ret_raw = raw.get("retrieval", {}) if isinstance(raw.get("retrieval"), dict) else {}
+    ret_tags_raw = ret_raw.get("tags", [])
+    ret_tags = [str(t) for t in ret_tags_raw] if isinstance(ret_tags_raw, list) else []
+    retrieval = RetrievalConfig(
+        enabled=bool(ret_raw.get("enabled", False)),
+        tags=ret_tags,
+        provider=str(ret_raw.get("provider", "noop")),
+        max_chars=_coerce_int(ret_raw.get("max_chars"), 4000),
+    )
+
+    bandit_raw = raw.get("bandit", {}) if isinstance(raw.get("bandit"), dict) else {}
+    bandit = BanditConfig(
+        enabled=bool(bandit_raw.get("enabled", False)),
+        state_path=str(bandit_raw.get("state_path", "")),
     )
 
     return Config(
@@ -96,4 +336,10 @@ def load_config(path: Path | None = None) -> Config:
         models=models,
         thresholds=thresholds,
         classifier=classifier,
+        synthesis=synthesis,
+        sampling=sampling,
+        refinement=refinement,
+        escalation=escalation,
+        retrieval=retrieval,
+        bandit=bandit,
     )
